@@ -49,8 +49,62 @@ Los merges de las ramas `feat/export-engine`, `feat/audio-post` y `feat/color-co
 
 ---
 
+## Bugs de runtime (causaban cierre repentino de la app)
+
+### 8. `projectStore.ts` — `undo`/`redo` sin `try/catch` en `JSON.parse`
+
+**Error:** Excepción no capturada al hacer Undo/Redo si un snapshot está corrupto.
+**Causa:** `undo()` y `redo()` usaban `JSON.parse(prevSnapshot)` sin `try/catch`. Si algún snapshot previo contenía datos inválidos (ej. `undefined` serializado, referencias circulares, o datos de una versión anterior), `JSON.parse` lanzaba una excepción que derrumbaba toda la app.
+**Fix:** Envolver ambos `JSON.parse` en bloques `try/catch`. Si falla, se limpia la pila de undo/redo y se loguea el error, evitando el crash.
+**Archivo:** `src/renderer/src/store/projectStore.ts`
+
+### 9. `projectStore.ts` + `Toolbar.tsx` — Split en el borde del clip produce duración cero
+
+**Error:** Segundo clip con `timelineDuration=0` al hacer split exactamente en el final del clip.
+**Causa:**
+- `Toolbar.tsx:37` usaba `currentTime <= c.timelineStart + c.timelineDuration` (inclusive), permitiendo split en el extremo.
+- `splitClip` en `projectStore.ts` no validaba que `localTime > 0` ni que `remaining > 0`.
+**Fix:**
+- `Toolbar`: cambiar `<=` por `<` para excluir el extremo final.
+- `splitClip`: agregar guards `if (localTime <= 0) return s` y `if (remaining <= 0) return s`.
+**Archivos:** `src/renderer/src/components/Toolbar/Toolbar.tsx`, `src/renderer/src/store/projectStore.ts`
+
+### 10. `KeyframeEditor.tsx` — Non-null assertions (`!`) peligrosas
+
+**Error:** Posible `TypeError: Cannot read properties of null` al eliminar keyframes.
+**Causa:** `removeKeyframe(selectedClip!.id, selectedEffect!.id, selectedParam!, kf.id)` usaba non-null assertions sin verificar que los valores sigan siendo válidos (ej. si el efecto fue eliminado mientras el panel estaba abierto).
+**Fix:** Agregar guard condicional: `if (!selectedClip || !selectedEffect || !selectedParam) return` antes de llamar a `removeKeyframe`.
+**Archivo:** `src/renderer/src/components/KeyframeEditor/KeyframeEditor.tsx`
+
+### 11. `EffectsPanel.tsx` — Sin protección contra efectos duplicados
+
+**Error:** Se podían agregar múltiples efectos del mismo tipo a un clip.
+**Causa:** El panel de efectos no verificaba si el efecto ya existía en el clip, a diferencia del `MixerPanel` que sí lo hacía.
+**Fix:** Agregar verificación `selectedClip.effects.some(e => e.type === def.id)` antes de agregar.
+**Archivo:** `src/renderer/src/components/EffectsPanel/EffectsPanel.tsx`
+
+### 12. `Timeline.tsx` — `moveClip` siempre asigna track 0
+
+**Error:** Al arrastrar clips en la línea de tiempo, todos se asignaban al primer track.
+**Causa:** `moveClip(dragClipIdRef.current, tracks[0]?.id ?? '', newStart)` usaba `tracks[0]` como track destino en lugar de buscar el track real del clip.
+**Fix:** Reemplazar `tracks[0]?.id` con búsqueda del track que contiene el clip: `tracks.find(t => t.clips.some(c => c.id === dragClipIdRef.current))?.id`.
+**Archivo:** `src/renderer/src/components/Timeline/Timeline.tsx`
+
+### 13. `ipc/index.ts` — Variable `audioEffects` redundante
+
+**Error:** Código muerto que filtraba efectos de audio sin usar el resultado.
+**Causa:** Merge conflict mal resuelto dejó una variable `audioEffects` duplicando el filtro de `clipAudioEffects`. La propiedad `audioEffects` del objeto exportado usaba `allAudioEffects`, no esta variable.
+**Fix:** Eliminar la variable `audioEffects` no utilizada.
+**Archivo:** `src/main/ipc/index.ts`
+
+---
+
 ## Archivos modificados
 
 - `src/main/ffmpeg/index.ts`
 - `src/main/ipc/index.ts`
 - `src/renderer/src/components/Timeline/Timeline.tsx`
+- `src/renderer/src/store/projectStore.ts`
+- `src/renderer/src/components/Toolbar/Toolbar.tsx`
+- `src/renderer/src/components/KeyframeEditor/KeyframeEditor.tsx`
+- `src/renderer/src/components/EffectsPanel/EffectsPanel.tsx`

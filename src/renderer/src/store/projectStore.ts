@@ -516,6 +516,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (!foundClip) return s
 
       const localTime = time - foundClip.timelineStart
+      if (localTime <= 0) return s
+      const remaining = foundClip.timelineDuration - localTime
+      if (remaining <= 0) return s
+
       const sourceOffset = foundClip.sourceStart + localTime / foundClip.speed
 
       const firstPart: Clip = {
@@ -530,7 +534,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         id: uid(),
         sourceStart: sourceOffset,
         timelineStart: time,
-        timelineDuration: foundClip.timelineDuration - localTime,
+        timelineDuration: remaining,
       }
 
       const tracks = s.project.tracks.map((t) => ({
@@ -1480,14 +1484,22 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (s.timeline.undoStack.length === 0 || !s.project) return s
       const currentSnapshot = JSON.stringify(s.project)
       const prevSnapshot = s.timeline.undoStack[s.timeline.undoStack.length - 1]
-      const prevProject = JSON.parse(prevSnapshot)
-      return {
-        project: prevProject,
-        timeline: {
-          ...s.timeline,
-          undoStack: s.timeline.undoStack.slice(0, -1),
-          redoStack: [...s.timeline.redoStack, currentSnapshot],
-        },
+      try {
+        const prevProject = JSON.parse(prevSnapshot)
+        return {
+          project: prevProject,
+          timeline: {
+            ...s.timeline,
+            undoStack: s.timeline.undoStack.slice(0, -1),
+            redoStack: [...s.timeline.redoStack, currentSnapshot],
+          },
+        }
+      } catch {
+        console.error('Undo: failed to parse snapshot, clearing undo stack')
+        return {
+          ...s,
+          timeline: { ...s.timeline, undoStack: [], redoStack: [] },
+        }
       }
     }),
 
@@ -1496,14 +1508,22 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (s.timeline.redoStack.length === 0 || !s.project) return s
       const currentSnapshot = JSON.stringify(s.project)
       const nextSnapshot = s.timeline.redoStack[s.timeline.redoStack.length - 1]
-      const nextProject = JSON.parse(nextSnapshot)
-      return {
-        project: nextProject,
-        timeline: {
-          ...s.timeline,
-          redoStack: s.timeline.redoStack.slice(0, -1),
-          undoStack: [...s.timeline.undoStack, currentSnapshot],
-        },
+      try {
+        const nextProject = JSON.parse(nextSnapshot)
+        return {
+          project: nextProject,
+          timeline: {
+            ...s.timeline,
+            redoStack: s.timeline.redoStack.slice(0, -1),
+            undoStack: [...s.timeline.undoStack, currentSnapshot],
+          },
+        }
+      } catch {
+        console.error('Redo: failed to parse snapshot, clearing redo stack')
+        return {
+          ...s,
+          timeline: { ...s.timeline, undoStack: [], redoStack: [] },
+        }
       }
     }),
 }))

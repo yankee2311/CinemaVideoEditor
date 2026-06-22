@@ -949,7 +949,8 @@ export default function Timeline() {
       if (dragTypeRef.current === 'move') {
         const delta = snappedTime - dragStartTimeRef.current
         const newStart = Math.max(0, dragClipOrigStartRef.current + delta)
-        moveClip(dragClipIdRef.current, tracks[0]?.id ?? '', newStart)
+        const clipTrack = tracks.find(t => t.clips.some(c => c.id === dragClipIdRef.current))
+        moveClip(dragClipIdRef.current, clipTrack?.id ?? '', newStart)
       } else if (dragTypeRef.current === 'trim-start') {
         const delta = snappedTime - dragStartTimeRef.current
         const newSourceStart = Math.max(0, dragClipOrigSourceStartRef.current + delta)

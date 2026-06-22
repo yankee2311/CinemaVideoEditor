@@ -228,10 +228,6 @@ export function registerIpcHandlers(): void {
           if (!asset && !clip.textData) continue
           if (asset && asset.type === 'audio') continue
 
-          const audioEffects = clip.effects.filter(e =>
-            ['equalizer', 'compressor', 'reverb', 'noise-gate', 'delay'].includes(e.type)
-          )
-
           videoClips.push({
             filePath: asset?.filePath ?? '',
             sourceStart: clip.sourceStart,

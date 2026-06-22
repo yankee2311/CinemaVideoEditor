@@ -119,7 +119,10 @@ export default function KeyframeEditor() {
                     {kf.interpolation}
                   </span>
                   <button
-                    onClick={() => removeKeyframe(selectedClip!.id, selectedEffect!.id, selectedParam!, kf.id)}
+                    onClick={() => {
+                      if (!selectedClip || !selectedEffect || !selectedParam) return
+                      removeKeyframe(selectedClip.id, selectedEffect.id, selectedParam, kf.id)
+                    }}
                     style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: 0, fontSize: 12, lineHeight: 1 }}
                   >
                     ×

@@ -34,7 +34,7 @@ export default function Toolbar() {
       const track = project.tracks.find(t => t.id === selectedTrackId)
       if (track) {
         const clip = track.clips.find(
-          c => currentTime >= c.timelineStart && currentTime <= c.timelineStart + c.timelineDuration
+          c => currentTime >= c.timelineStart && currentTime < c.timelineStart + c.timelineDuration
         )
         if (clip) {
           splitClip(clip.id, currentTime)
