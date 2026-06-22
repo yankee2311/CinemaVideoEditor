@@ -2,8 +2,126 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { useProjectStore } from '@/store/projectStore'
 import { usePlayback } from '@/hooks/usePlayback'
 import { timeToString } from '@/engine/timelineEngine'
+import type { Clip } from '@shared/types'
 
 const FRAME_DEBOUNCE_MS = 300
+
+// ── CSS Filter & Transform Pipeline ──────────────────────────
+
+interface ClipCSS {
+  filter: string
+  transform: string
+  opacity: number
+}
+
+function computeClipCSS(clip: Clip | null, localTimeSec: number): ClipCSS {
+  if (!clip) return { filter: '', transform: '', opacity: 1 }
+
+  const filters: string[] = []
+  let opacity = clip.transform.opacity ?? 1
+
+  // ── Primary Color ──
+  if (clip.primaryColor) {
+    const pc = clip.primaryColor
+    const expBrightness = 1 + pc.exposure * 0.12
+    const pcContrast = 1 + pc.contrast * 0.08
+    const pcSaturation = 1 + pc.saturation
+
+    filters.push(`brightness(${expBrightness.toFixed(3)})`)
+    filters.push(`contrast(${pcContrast.toFixed(3)})`)
+    filters.push(`saturate(${pcSaturation.toFixed(3)})`)
+
+    // temperature: warm → sepia; cool → approximated hue shift toward blue
+    if (pc.temperature !== 0) {
+      if (pc.temperature > 0) {
+        filters.push(`sepia(${Math.min(pc.temperature * 0.3, 1).toFixed(3)})`)
+      } else {
+        // negative temperature: shift hue toward cyan/blue (~210deg hue-rotate)
+        filters.push(`hue-rotate(${Math.max(pc.temperature * 0.6, -30).toFixed(0)}deg)`)
+      }
+    }
+  }
+
+  // ── Effects ──
+  if (clip.effects) {
+    for (const effect of clip.effects) {
+      if (!effect.enabled) continue
+
+      switch (effect.type) {
+        case 'brightness-contrast': {
+          const brightness = effect.params.brightness?.value as number ?? 0
+          const contrast = effect.params.contrast?.value as number ?? 0
+          const b = 1 + brightness * 0.5
+          const c = 1 + contrast * 0.5
+          filters.push(`brightness(${b.toFixed(3)})`)
+          filters.push(`contrast(${c.toFixed(3)})`)
+          break
+        }
+        case 'hue-saturation': {
+          const hue = effect.params.hue?.value as number ?? 0
+          const saturation = effect.params.saturation?.value as number ?? 0
+          if (hue !== 0) filters.push(`hue-rotate(${hue}deg)`)
+          const s = 1 + saturation
+          filters.push(`saturate(${s.toFixed(3)})`)
+          break
+        }
+        case 'blur': {
+          const amount = effect.params.amount?.value as number ?? 0
+          if (amount > 0) filters.push(`blur(${amount.toFixed(1)}px)`)
+          break
+        }
+        case 'sharpen': {
+          const amount = effect.params.amount?.value as number ?? 0
+          if (amount > 0) {
+            filters.push(`contrast(${(1 + amount * 0.35).toFixed(3)})`)
+            filters.push(`brightness(${(1 + amount * 0.12).toFixed(3)})`)
+          }
+          break
+        }
+      }
+    }
+  }
+
+  // ── Transitions: fade in / out ──
+  if (clip.transitionIn) {
+    const dur = clip.transitionIn.duration
+    if (dur > 0 && localTimeSec < dur) {
+      const fadeProgress = localTimeSec / dur
+      if (clip.transitionIn.type === 'fade' || clip.transitionIn.type === 'dissolve') {
+        opacity = Math.min(opacity, fadeProgress)
+      }
+    }
+  }
+  if (clip.transitionOut) {
+    const dur = clip.transitionOut.duration
+    const outStart = clip.timelineDuration - dur
+    if (dur > 0 && localTimeSec >= outStart) {
+      const fadeProgress = 1 - (localTimeSec - outStart) / dur
+      if (clip.transitionOut.type === 'fade' || clip.transitionOut.type === 'dissolve') {
+        opacity = Math.min(opacity, Math.max(0, fadeProgress))
+      }
+    }
+  }
+
+  // ── Transform ──
+  const t = clip.transform
+  const transforms: string[] = []
+  if (t.positionX !== 0 || t.positionY !== 0) {
+    transforms.push(`translate(${t.positionX}px, ${t.positionY}px)`)
+  }
+  if (t.scaleX !== 1 || t.scaleY !== 1) {
+    transforms.push(`scale(${t.scaleX}, ${t.scaleY})`)
+  }
+  if (t.rotation !== 0) {
+    transforms.push(`rotate(${t.rotation}deg)`)
+  }
+
+  return {
+    filter: filters.join(' '),
+    transform: transforms.join(' '),
+    opacity: Math.max(0, Math.min(1, opacity)),
+  }
+}
 
 export default function PreviewPanel() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -42,6 +160,14 @@ export default function PreviewPanel() {
     }
     return null
   }, [project, timeline.currentTime])
+
+  // ── Clip CSS (filters + transforms + transitions) ──
+  const clipCss = useMemo<ClipCSS>(() => {
+    const result = getClipAtTime()
+    if (!result) return { filter: '', transform: '', opacity: 1 }
+    const localTime = timeline.currentTime - result.clip.timelineStart
+    return computeClipCSS(result.clip, localTime)
+  }, [getClipAtTime, timeline.currentTime])
 
   const getMaxTime = useCallback(() => {
     if (!project) return 60
@@ -256,6 +382,10 @@ export default function PreviewPanel() {
           height: '100%',
           objectFit: 'contain',
           display: usingVideo ? 'block' : 'none',
+          filter: clipCss.filter || undefined,
+          transform: clipCss.transform || undefined,
+          transformOrigin: 'center center',
+          opacity: clipCss.opacity,
         }}
         playsInline
       />
@@ -270,8 +400,11 @@ export default function PreviewPanel() {
               maxWidth: '100%',
               maxHeight: '100%',
               objectFit: 'contain',
-              opacity: frameLoading ? 0.5 : 1,
+              opacity: frameLoading ? 0.5 : clipCss.opacity,
               transition: 'opacity 0.15s',
+              filter: clipCss.filter || undefined,
+              transform: clipCss.transform || undefined,
+              transformOrigin: 'center center',
             }}
             alt="Preview frame"
           />
