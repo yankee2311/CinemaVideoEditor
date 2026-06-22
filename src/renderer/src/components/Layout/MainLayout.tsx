@@ -12,6 +12,8 @@ import ScopesPanel from '@/components/ScopesPanel/ScopesPanel'
 import TextPanel from '@/components/TextPanel/TextPanel'
 import MarkersPanel from '@/components/MarkersPanel/MarkersPanel'
 import SettingsPanel from '@/components/SettingsPanel/SettingsPanel'
+import SaveIndicator from '@/components/Export/SaveIndicator'
+import VersionHistory from '@/components/Export/VersionHistory'
 import { useProjectStore } from '@/store/projectStore'
 import { useUIStore } from '@/store/uiStore'
 
@@ -118,6 +120,7 @@ export default function MainLayout() {
   const { activePanel } = useUIStore()
 
   const [rightTab, setRightTab] = React.useState<'properties' | 'effects' | 'transitions' | 'keyframes' | 'mixer' | 'color' | 'scopes' | 'text' | 'markers' | 'settings'>('properties')
+  const [showHistory, setShowHistory] = React.useState(false)
 
   const tabs = [
     { id: 'properties' as const, label: 'Props' },
@@ -157,6 +160,16 @@ export default function MainLayout() {
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {project.name}
         </span>
+        <button
+          onClick={() => setShowHistory(true)}
+          title="Version History"
+          style={{
+            background: 'none', border: 'none', color: 'var(--text-muted)',
+            cursor: 'pointer', fontSize: 12, padding: '2px 8px',
+          }}
+        >
+          🕐 History
+        </button>
       </div>
 
       <div style={styles.workspace}>
@@ -215,7 +228,12 @@ export default function MainLayout() {
         <SpanBtn onClick={() => setSnap(!timeline.snapEnabled)}>
           Snap: {timeline.snapEnabled ? 'On' : 'Off'}
         </SpanBtn>
+        <SaveIndicator />
       </div>
+
+      {showHistory && project && (
+        <VersionHistory projectId={project.id} onClose={() => setShowHistory(false)} />
+      )}
     </div>
   )
 }
