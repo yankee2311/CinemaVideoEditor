@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { useProjectStore } from '@/store/projectStore'
 import { usePlayback } from '@/hooks/usePlayback'
+import { useAudioEngine } from '@/hooks/useAudioEngine'
 import { timeToString } from '@/engine/timelineEngine'
 import type { Clip } from '@shared/types'
 
@@ -128,6 +129,7 @@ export default function PreviewPanel() {
   const imgRef = useRef<HTMLImageElement>(null)
   const { project, timeline } = useProjectStore()
   const { togglePlay, seek } = usePlayback()
+  const { engine: audioEngine } = useAudioEngine()
   const [duration, setDuration] = useState(0)
   const [showControls, setShowControls] = useState(true)
   const [currentFrame, setCurrentFrame] = useState<string | null>(null)
@@ -231,7 +233,7 @@ export default function PreviewPanel() {
     return true
   }, [getClipAtTime, timeline.currentTime, doExtract])
 
-  // ── Playback setup / teardown ──────────────────────────────────
+  // ── Playback setup / teardown (video) ─────────────────────────
   // Only runs when playing state changes OR when the active clip changes
   useEffect(() => {
     const video = videoRef.current
@@ -257,16 +259,17 @@ export default function PreviewPanel() {
         video.preload = 'auto'
         video.currentTime = sourceTime
         video.playbackRate = clip.speed
-        video.muted = clip.muted
-        video.volume = clip.muted ? 0 : 1
+        // Mute video element: audioEngine handles all audio
+        video.muted = true
+        video.volume = 0
         activeSrcKey.current = srcKey
         video.play().catch((err) => {
           console.warn('[PreviewPanel] play init failed:', err.message)
         })
       } else {
         video.playbackRate = clip.speed
-        video.muted = clip.muted
-        video.volume = clip.muted ? 0 : 1
+        video.muted = true
+        video.volume = 0
         video.play().catch((err) => {
           console.warn('[PreviewPanel] play resume failed:', err.message)
         })
@@ -283,6 +286,73 @@ export default function PreviewPanel() {
     }
     activeSrcKey.current = null
   }, [timeline.playing, activeClipKey])
+
+  // ── AudioEngine routing (all tracks with audio) ──────────────
+  useEffect(() => {
+    if (!project || !audioEngine.initialized) return
+
+    if (timeline.playing) {
+      // Check if any track has solo enabled
+      const hasAnySolo = project.tracks.some(t => t.solo)
+
+      // Start audio sources for all clips visible at current time
+      for (const track of project.tracks) {
+        // Only process tracks that can carry audio (video and audio tracks)
+        if (track.type !== 'video' && track.type !== 'audio') continue
+
+        for (const clip of track.clips) {
+          const isVisible =
+            timeline.currentTime >= clip.timelineStart &&
+            timeline.currentTime < clip.timelineStart + clip.timelineDuration
+
+          if (!isVisible) continue
+
+          const asset = project.mediaAssets.find(m => m.id === clip.mediaId)
+          if (!asset) continue
+
+          // Skip non-audio media
+          if (asset.type !== 'video' && asset.type !== 'audio') continue
+
+          const mediaUrl = window.cineflow.getMediaUrl(asset.filePath)
+          const sourceStart = clip.sourceStart
+          const sourceEnd = clip.sourceEnd
+          const speed = clip.speed
+
+          audioEngine.playSource(
+            clip.id,
+            mediaUrl,
+            sourceStart,
+            sourceEnd,
+            speed,
+            track.id,
+            {
+              volume: track.volume,
+              pan: track.pan,
+              muted: track.muted || clip.muted,
+              solo: track.solo,
+              hasAnySolo,
+              effects: track.effects,
+            },
+          )
+        }
+      }
+    } else {
+      audioEngine.stopAll()
+    }
+  }, [timeline.playing, project, audioEngine.initialized])
+
+  // Stop all audio on unmount
+  useEffect(() => {
+    return () => {
+      audioEngine.stopAll()
+    }
+  }, [])
+
+  // Sync master volume from MixerPanel
+  useEffect(() => {
+    if (!audioEngine.initialized) return
+    // Master volume is set by MixerPanel, no-op here
+  }, [audioEngine.initialized])
 
   // ── Seek / scrub when paused ─────────────────────────────────
   useEffect(() => {

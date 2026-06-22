@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import MainLayout from '@/components/Layout/MainLayout'
 import { PlaybackProvider } from '@/hooks/usePlayback'
+import { AudioEngineProvider } from '@/hooks/useAudioEngine'
 import { useAutoSave } from '@/hooks/useAutoSave'
 import { useProjectStore } from '@/store/projectStore'
 
@@ -52,8 +53,10 @@ export default function App() {
   }, [newProject, loadProject])
 
   return (
-    <PlaybackProvider>
-      <MainLayout />
-    </PlaybackProvider>
+    <AudioEngineProvider>
+      <PlaybackProvider>
+        <MainLayout />
+      </PlaybackProvider>
+    </AudioEngineProvider>
   )
 }

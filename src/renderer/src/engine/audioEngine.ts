@@ -18,6 +18,7 @@ interface DspChain {
 
 interface AudioSource {
   clipId: string
+  trackId: string
   sourceNode: AudioBufferSourceNode | null
   gainNode: GainNode
   panNode: StereoPannerNode
@@ -120,10 +121,10 @@ class AudioEngine {
 
   // ─── Buffer Loading ──────────────────────────────────
 
-  async loadBuffer(filePath: string): Promise<AudioBuffer | null> {
+  async loadBuffer(mediaUrl: string): Promise<AudioBuffer | null> {
     if (!this.ctx) return null
     try {
-      const response = await fetch(`media:///${encodeURI(filePath.replace(/\\/g, '/'))}`)
+      const response = await fetch(mediaUrl)
       const arrayBuffer = await response.arrayBuffer()
       return await this.ctx.decodeAudioData(arrayBuffer)
     } catch {
@@ -149,8 +150,8 @@ class AudioEngine {
       const bandName = `band${i + 1}`
       const gain = (eq.params[bandName]?.value as number) ?? 0
 
-      if (gain !== 0 || true) {
-        // Always create band for chain structure, bypass with gain=0
+      if (gain !== 0) {
+        // Only create band if gain is non-zero
         const filter = ctx.createBiquadFilter()
         filter.type = 'peaking'
         filter.frequency.value = frequencies[i]
@@ -251,21 +252,37 @@ class AudioEngine {
       feedbackMix.connect(decayGain).connect(d)
     }
 
-    // Split signal to dry and wet
-    const splitter = ctx.createChannelSplitter(2)
-    // Actually use a simpler approach: dry path + wet path from a gain split
-
-    // Create the effect chain differently — tee the input to dry and wet paths
+    // Create the input tee node
     const inputGain = ctx.createGain()
     inputGain.gain.value = 1
 
-    // Dry path: input -> dryGain -> output
-    // Wet path: input -> preDelay -> delay network -> wetGain -> output
+    // ── Routing ──
+    // Dry path: inputGain → dryGain (output endpoint)
+    inputGain.connect(dryGain)
+
+    // Wet path: inputGain → preDelay → delays[0] → delay network
+    inputGain.connect(preDelay)
+    preDelay.connect(delays[0])
+
+    // Each delay line: delay → LP filter → (wetGain + feedbackMix)
+    // Note: each delay is already connected to its LP filter above
+    for (const lp of lowpassFilters) {
+      lp.connect(wetGain)
+    }
+
+    // Feedback loop: feedbackMix → decayGain → delays[0]
+    // Clear the previous for-loop connections and rewire cleanly
+    feedbackMix.disconnect()
+    feedbackMix.connect(decayGain)
+    decayGain.connect(delays[0])
+
+    // Mix wet into dry output
+    wetGain.connect(dryGain)
 
     return {
       nodes: [inputGain, dryGain, wetGain, preDelay, ...delays, ...lowpassFilters, feedbackMix, decayGain],
       inputEndpoint: inputGain,
-      outputEndpoint: dryGain, // will be mixed externally
+      outputEndpoint: dryGain,
     }
   }
 
@@ -374,10 +391,7 @@ class AudioEngine {
     // Find the voice track source to read its level
     let voiceLevel = 0
     for (const [, src] of this.sources) {
-      if (src.clipId && this.ducking.voiceTrackId) {
-        // Check if this source belongs to the voice track
-        // We need the track mapping — use a simple heuristic
-        // In a real app, sources store trackId
+      if (src.trackId === this.ducking.voiceTrackId) {
         const vu = src.vuMeter
         if (vu) {
           src.vuMeter.analyser.getFloatTimeDomainData(vu.data)
@@ -438,26 +452,39 @@ class AudioEngine {
   playSource(
     clipId: string,
     filePath: string,
-    startOffset: number,
-    duration: number,
+    sourceStart: number,
+    sourceEnd: number,
     speed: number,
-    muted: boolean,
     trackId: string,
-    trackVolume: number,
-    trackPan: number,
-    clipEffects: Effect[],
-    trackEffects: Effect[],
+    options?: {
+      volume?: number
+      pan?: number
+      muted?: boolean
+      solo?: boolean
+      hasAnySolo?: boolean
+      effects?: Effect[]
+    },
   ): void {
     if (!this.ctx || !this.masterGain) return
     this.stopSource(clipId)
+
+    const opts = options ?? {}
+    const trackVolume = opts.volume ?? 1
+    const trackPan = opts.pan ?? 0
+    const isMuted = opts.muted ?? false
+    const trackEffects = opts.effects ?? []
+
+    // Solo logic: if any track has solo, non-solo tracks are silenced
+    let effectiveMuted = isMuted
+    if (opts.hasAnySolo && !opts.solo) {
+      effectiveMuted = true
+    }
 
     const sourceNode = this.ctx.createBufferSource()
     const gainNode = this.ctx.createGain()
     const panNode = this.ctx.createStereoPanner()
 
-    // Apply solo logic: if any track has solo, only solo'd tracks play
-    // (this is handled by caller, but we apply here via gain)
-    gainNode.gain.value = muted ? 0 : trackVolume
+    gainNode.gain.value = effectiveMuted ? 0 : trackVolume
     panNode.pan.value = trackPan
 
     // Create per-source VU meter
@@ -494,11 +521,12 @@ class AudioEngine {
     panNode.connect(vuAnalyser)
     vuAnalyser.connect(this.masterGain)
 
+    const duration = sourceEnd - sourceStart
     this.loadBuffer(filePath).then(buffer => {
       if (buffer && this.ctx) {
         sourceNode.buffer = buffer
         sourceNode.playbackRate.value = speed
-        const offset = Math.min(startOffset, buffer.duration)
+        const offset = Math.min(sourceStart, buffer.duration)
         const dur = Math.min(duration, buffer.duration - offset)
         sourceNode.start(0, offset, dur)
       }
@@ -506,13 +534,14 @@ class AudioEngine {
 
     this.sources.set(clipId, {
       clipId,
+      trackId,
       sourceNode,
       gainNode,
       panNode,
       buffer: null,
-      startOffset,
+      startOffset: sourceStart,
       startTime: this.ctx.currentTime,
-      muted,
+      muted: effectiveMuted,
       vuMeter: vu,
       dspNodes,
     })
@@ -617,9 +646,11 @@ class AudioEngine {
     let totalRms = 0
     let count = 0
     for (const [, src] of this.sources) {
-      // Sources don't currently store trackId — could add that
-      // For now return master VU as approximation
-      return this.getVUData()
+      if (src.trackId !== trackId) continue
+      const data = this.getSourceVUData(src.clipId)
+      totalPeak = Math.max(totalPeak, data.peak)
+      totalRms += data.rms
+      count++
     }
     return { peak: totalPeak, rms: count > 0 ? totalRms / count : 0 }
   }
