@@ -63,6 +63,16 @@ interface ProjectStore {
   slipClip: (clipId: string, sourceOffset: number) => void
   slideClip: (clipId: string, newStart: number) => void
 
+  // Track audio
+  setTrackVolume: (trackId: string, volume: number) => void
+  setTrackPan: (trackId: string, pan: number) => void
+  setTrackMuted: (trackId: string, muted: boolean) => void
+  setTrackSolo: (trackId: string, solo: boolean) => void
+  addTrackEffect: (trackId: string, effectType: EffectType) => void
+  removeTrackEffect: (trackId: string, effectId: string) => void
+  updateTrackEffectParam: (trackId: string, effectId: string, paramName: string, value: number | [number, number] | boolean) => void
+  setTrackEffectEnabled: (trackId: string, effectId: string, enabled: boolean) => void
+
   // Effects
   addEffect: (clipId: string, effectType: EffectType) => void
   removeEffect: (clipId: string, effectId: string) => void
@@ -629,6 +639,153 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                         : c
                     )
                     .sort((a, b) => a.timelineStart - b.timelineStart),
+                }
+              : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  // Track audio actions
+  setTrackVolume: (trackId, volume) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId ? { ...t, volume: Math.max(0, Math.min(2, volume)) } : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setTrackPan: (trackId, pan) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId ? { ...t, pan: Math.max(-1, Math.min(1, pan)) } : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setTrackMuted: (trackId, muted) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId ? { ...t, muted } : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setTrackSolo: (trackId, solo) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId ? { ...t, solo } : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  addTrackEffect: (trackId, effectType) =>
+    set((s) => {
+      if (!s.project) return s
+      const def = BUILTIN_EFFECTS.find(e => e.type === effectType)
+      if (!def) return s
+      const newEffect = {
+        id: uid(),
+        name: def.name,
+        type: def.type,
+        enabled: true,
+        params: Object.fromEntries(def.params.map(p => [p.name, { ...p, keyframes: [] }])),
+      }
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId
+              ? { ...t, effects: [...t.effects, newEffect] }
+              : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  removeTrackEffect: (trackId, effectId) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId
+              ? { ...t, effects: t.effects.filter(e => e.id !== effectId) }
+              : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  updateTrackEffectParam: (trackId, effectId, paramName, value) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId
+              ? {
+                  ...t,
+                  effects: t.effects.map(e =>
+                    e.id === effectId
+                      ? { ...e, params: { ...e.params, [paramName]: { ...e.params[paramName], value } } }
+                      : e
+                  ),
+                }
+              : t
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setTrackEffectEnabled: (trackId, effectId, enabled) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map(t =>
+            t.id === trackId
+              ? {
+                  ...t,
+                  effects: t.effects.map(e =>
+                    e.id === effectId ? { ...e, enabled } : e
+                  ),
                 }
               : t
           ),

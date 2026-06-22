@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { useProjectStore } from '@/store/projectStore'
 import { timeToString, timeToPixels, pixelsToTime, getSnapPoints, snapTime } from '@/engine/timelineEngine'
+import { useWaveformCache } from '@/hooks/useWaveformCache'
 import type { Clip, Track } from '@shared/types'
 
 const TRACK_HEIGHT = 52
@@ -64,6 +65,44 @@ export default function Timeline() {
 
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 200 })
   const [isDragging, setIsDragging] = useState(false)
+
+  // Waveform cache for audio tracks
+  const { getWaveform } = useWaveformCache()
+  const waveformDataRef = useRef<Map<string, { samples: number[]; sampleRate: number }>>(new Map())
+  const pendingWaveformsRef = useRef<Set<string>>(new Set())
+
+  // Load waveforms for audio clips as they appear
+  useEffect(() => {
+    if (!project) return
+    const audioClips: { clipId: string; mediaId: string }[] = []
+    for (const track of tracks) {
+      if (track.type === 'audio' || track.type === 'video') {
+        for (const clip of track.clips) {
+          if (!waveformDataRef.current.has(clip.id)) {
+            audioClips.push({ clipId: clip.id, mediaId: clip.mediaId })
+          }
+        }
+      }
+    }
+
+    // Load up to 5 at a time
+    let loaded = 0
+    for (const { clipId, mediaId } of audioClips) {
+      if (loaded >= 5) break
+      if (pendingWaveformsRef.current.has(clipId)) continue
+      const asset = project.mediaAssets.find(m => m.id === mediaId)
+      if (!asset) continue
+
+      pendingWaveformsRef.current.add(clipId)
+      getWaveform(asset.filePath, 0, Math.min(30, asset.duration), 80).then(data => {
+        waveformDataRef.current.set(clipId, { samples: data.samples, sampleRate: data.sampleRate })
+        pendingWaveformsRef.current.delete(clipId)
+      }).catch(() => {
+        pendingWaveformsRef.current.delete(clipId)
+      })
+      loaded++
+    }
+  }, [tracks, project, getWaveform])
 
   const zoom = timeline.zoom
   const currentTime = timeline.currentTime
@@ -241,12 +280,43 @@ export default function Timeline() {
         ctx.roundRect(cx, clipY, cw, clipH, 4)
         ctx.fill()
 
-        // Audio bar
-        if (track.type === 'video' && cw > 20) {
-          ctx.fillStyle = 'rgba(39,174,96,0.5)'
-          ctx.beginPath()
-          ctx.roundRect(cx + 2, clipY + clipH - AUDIO_BAR_HEIGHT - 2, cw - 4, AUDIO_BAR_HEIGHT, 1)
-          ctx.fill()
+        // Audio waveform visualization for audio tracks
+        if ((track.type === 'audio' || track.type === 'video') && cw > 20) {
+          const waveform = waveformDataRef.current.get(clip.id)
+          if (waveform && waveform.samples.length > 0) {
+            // Render waveform inside the clip
+            const waveY = clipY + (track.type === 'audio' ? 10 : clipH - AUDIO_BAR_HEIGHT - 4)
+            const waveH = track.type === 'audio' ? clipH - 18 : AUDIO_BAR_HEIGHT + 2
+            const gap = Math.max(1, Math.floor(waveform.samples.length / cw))
+            const midWaveY = waveY + waveH / 2
+
+            ctx.save()
+            ctx.beginPath()
+            ctx.roundRect(cx, clipY, cw, clipH, 4)
+            ctx.clip()
+
+            ctx.strokeStyle = track.type === 'audio' ? 'rgba(39,174,96,0.7)' : 'rgba(39,174,96,0.4)'
+            ctx.lineWidth = 0.8
+            ctx.beginPath()
+            for (let px = 0; px < Math.min(cw, waveform.samples.length); px += 0.5) {
+              const sampleIdx = Math.floor((px / cw) * waveform.samples.length)
+              const sample = waveform.samples[Math.min(sampleIdx, waveform.samples.length - 1)]
+              const barH = sample * (waveH / 2)
+              const x = cx + px
+              ctx.moveTo(x, midWaveY - barH)
+              ctx.lineTo(x, midWaveY + barH)
+            }
+            ctx.stroke()
+            ctx.restore()
+          } else {
+            // Loading placeholder
+            ctx.fillStyle = 'rgba(39,174,96,0.2)'
+            const barY = track.type === 'audio' ? clipY + clipH / 2 - 1 : clipY + clipH - AUDIO_BAR_HEIGHT - 3
+            const barH = track.type === 'audio' ? 2 : AUDIO_BAR_HEIGHT
+            ctx.beginPath()
+            ctx.roundRect(cx + 2, barY, cw - 4, barH, 1)
+            ctx.fill()
+          }
         }
 
         // Clip name

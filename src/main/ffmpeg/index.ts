@@ -277,13 +277,20 @@ function buildAudioEffectsFilter(effects: ExportEffectInfo[]): string {
     if (!effect.enabled) continue
     switch (effect.type) {
       case 'equalizer': {
-        const bands = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-        for (let i = 0; i < 10; i++) {
+        // 5-band parametric EQ matching the UI (80, 250, 800, 2500, 8000 Hz)
+        const eqBands = [
+          { f: 80, w: 70 },
+          { f: 250, w: 100 },
+          { f: 800, w: 200 },
+          { f: 2500, w: 500 },
+          { f: 8000, w: 1000 },
+        ]
+        const eqParts: string[] = []
+        for (let i = 0; i < 5; i++) {
           const gain = (effect.params[`band${i + 1}`]?.value as number) ?? 0
-          if (gain !== 0) {
-            filters.push(`equalizer=f=${bands[i]}:width_type=q:width=1:g=${gain.toFixed(1)}`)
-          }
+          eqParts.push(`c${i} f=${eqBands[i].f} w=${eqBands[i].w} g=${gain.toFixed(1)}`)
         }
+        filters.push(`anequalizer=${eqParts.join('|')}`)
         break
       }
       case 'compressor': {
@@ -292,7 +299,9 @@ function buildAudioEffectsFilter(effects: ExportEffectInfo[]): string {
         const attack = (effect.params.attack?.value as number) ?? 3
         const release = (effect.params.release?.value as number) ?? 100
         const knee = (effect.params.knee?.value as number) ?? 3
-        filters.push(`acompressor=threshold=${threshold}dB:ratio=${ratio.toFixed(1)}:attack=${attack}ms:release=${release}ms:knee=${knee}dB`)
+        // Auto makeup gain: compensate for gain reduction
+        const makeupDb = Math.max(0, (-threshold * (1 - 1 / ratio)) / 2)
+        filters.push(`acompressor=threshold=${threshold}dB:ratio=${ratio.toFixed(1)}:attack=${attack}ms:release=${release}ms:knee=${knee}dB:makeup=${makeupDb.toFixed(1)}`)
         break
       }
       case 'reverb': {

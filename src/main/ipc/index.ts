@@ -155,25 +155,43 @@ export function registerIpcHandlers(): void {
         settings: { format: ExportOptions['format']; resolution: ExportOptions['resolution']; quality: number; fps: number }
       }
 
+      const audioEffectTypes = ['equalizer', 'compressor', 'reverb', 'noise-gate', 'delay'] as const
+
+      // Check for solo: if any track has solo, only solo'd tracks are used
+      const hasSolo = project.tracks.some(t => t.solo)
+
       const videoClips: ExportClipInfo[] = []
       let sourceWidth = 1920
       let sourceHeight = 1080
 
       for (const track of project.tracks) {
-        if (track.type !== 'video') continue
+        // Skip non-video and non-audio tracks for export
+        // But add audio-only tracks as well (they contribute audio to the mix)
+        if (track.type !== 'video' && track.type !== 'audio') continue
+
+        // Solo logic — if any solo is active, skip tracks without solo
+        if (hasSolo && !track.solo) continue
+
         for (const clip of track.clips) {
           const asset = project.mediaAssets.find(m => m.id === clip.mediaId)
           if (!asset) continue
-          if (asset.type === 'image') continue
-          const audioEffects = clip.effects.filter(e =>
-            ['equalizer', 'compressor', 'reverb', 'noise-gate', 'delay'].includes(e.type)
+          if (asset.type === 'image' && track.type !== 'video') continue
+
+          // Merge clip-level + track-level audio effects
+          const clipAudioEffects = clip.effects.filter(e =>
+            audioEffectTypes.includes(e.type as typeof audioEffectTypes[number])
           )
+          const trackAudioEffects = track.effects.filter(e =>
+            audioEffectTypes.includes(e.type as typeof audioEffectTypes[number])
+          )
+          const allAudioEffects = [...trackAudioEffects, ...clipAudioEffects]
+
           videoClips.push({
             filePath: asset.filePath,
             sourceStart: clip.sourceStart,
             sourceEnd: clip.sourceEnd,
             speed: clip.speed,
-            muted: clip.muted,
+            muted: clip.muted || track.muted,
             timelineStart: clip.timelineStart,
             effects: clip.effects.map(e => ({
               type: e.type,
@@ -182,7 +200,7 @@ export function registerIpcHandlers(): void {
                 Object.entries(e.params).map(([k, v]) => [k, { value: v.value, type: v.type }])
               ),
             })),
-            audioEffects: audioEffects.map(e => ({
+            audioEffects: allAudioEffects.map(e => ({
               type: e.type,
               enabled: e.enabled,
               params: Object.fromEntries(
@@ -202,15 +220,10 @@ export function registerIpcHandlers(): void {
               : null,
           })
           if (asset.width > 0 && asset.height > 0) {
-            sourceWidth = asset.width
-            sourceHeight = asset.height
+            sourceWidth = Math.max(sourceWidth, asset.width)
+            sourceHeight = Math.max(sourceHeight, asset.height)
           }
         }
-      }
-
-      if (videoClips.length === 0) {
-        dialog.showErrorBox('Export', 'No video clips found to export.')
-        return false
       }
 
       const result = await dialog.showSaveDialog({
