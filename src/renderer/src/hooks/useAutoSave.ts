@@ -17,11 +17,15 @@ export function useAutoSave() {
       if (serialized === lastSaveRef.current) return
       lastSaveRef.current = serialized
 
+      // Save to local storage as fallback
       try {
         const autosaveData = JSON.parse(serialized)
         autosaveData.name = `${autosaveData.name} (autosave)`
         localStorage.setItem('cineflow-autosave', JSON.stringify(autosaveData))
       } catch {}
+
+      // Also save to main process (version history)
+      window.cineflow.saveVersion(serialized).catch(() => {})
     }, AUTOSAVE_INTERVAL)
 
     return () => {

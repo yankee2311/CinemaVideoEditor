@@ -1,10 +1,14 @@
 import React, { useEffect } from 'react'
 import MainLayout from '@/components/Layout/MainLayout'
 import { PlaybackProvider } from '@/hooks/usePlayback'
+import { useAutoSave } from '@/hooks/useAutoSave'
 import { useProjectStore } from '@/store/projectStore'
 
 export default function App() {
   const { newProject, loadProject, project } = useProjectStore()
+
+  // Enable auto-save
+  useAutoSave()
 
   useEffect(() => {
     const handler = (action: string) => {
@@ -28,6 +32,8 @@ export default function App() {
           if (state.project) {
             const json = JSON.stringify(state.project, null, 2)
             window.cineflow.saveProject(json)
+            // Also save version
+            window.cineflow.saveVersion(json).catch(() => {})
           }
           break
         }

@@ -81,6 +81,10 @@ interface ProjectStore {
   addTextClip: (trackId: string, timelineStart: number, textData?: Partial<TextClipData>) => void
   updateTextClip: (clipId: string, textData: Partial<TextClipData>) => void
 
+  // Proxy management
+  setMediaProxyPath: (assetId: string, proxyPath: string) => void
+  useProxyForPreview: (clipId: string, useProxy: boolean) => void
+
   // Multicam sync
   syncMulticam: (clipIds: string[]) => Promise<void>
 
@@ -979,6 +983,40 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             clips: t.clips.map((c) =>
               c.id === clipId && c.textData
                 ? { ...c, textData: { ...c.textData, ...textData } }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  // ── Proxy management ──
+  setMediaProxyPath: (assetId, proxyPath) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          mediaAssets: s.project.mediaAssets.map((a) =>
+            a.id === assetId ? { ...a, proxyPath } : a
+          ),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  useProxyForPreview: (clipId, useProxy) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? { ...c, _useProxy: useProxy as any }
                 : c
             ),
           })),

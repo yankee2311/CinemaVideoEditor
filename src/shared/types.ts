@@ -298,6 +298,8 @@ export const IPC_CHANNELS = {
   SHOW_SAVE_DIALOG: 'dialog:save',
   SHOW_OPEN_DIALOG: 'dialog:open',
   EXPORT_VIDEO: 'export:video',
+  CANCEL_EXPORT: 'export:cancel',
+  GET_EXPORT_QUEUE: 'export:get-queue',
   SYNC_MULTICAM: 'media:sync-multicam',
   MENU_ACTION: 'menu:action',
   GET_WAVEFORM: 'media:get-waveform',
@@ -305,6 +307,10 @@ export const IPC_CHANNELS = {
   LOAD_LUT: 'media:load-lut',
   GET_SCOPE_DATA: 'media:get-scope-data',
   GENERATE_PROXY: 'media:generate-proxy',
+  DETECT_GPU: 'gpu:detect',
+  SAVE_VERSION: 'version:save',
+  LIST_VERSIONS: 'version:list',
+  RESTORE_VERSION: 'version:restore',
 } as const;
 
 export interface ImportMediaResult {
@@ -312,13 +318,135 @@ export interface ImportMediaResult {
   thumbnailPath?: string;
 }
 
-export interface ExportSettings {
-  format: 'mp4' | 'mov' | 'avi' | 'webm';
-  codec: 'h264' | 'h265' | 'prores' | 'vp9';
-  resolution: 'source' | '1080p' | '720p' | '480p';
-  bitrate: number;
-  fps: number;
+// ── Expanded Export Settings ──
+
+export type ExportPreset = 'youtube' | 'tiktok' | 'prores422' | 'dnxhr' | 'h265' | 'av1' | 'vp9' | 'custom';
+export type ExportFormat = 'mp4' | 'mov' | 'mkv' | 'webm';
+export type ExportCodec = 'h264' | 'h265' | 'prores' | 'vp9' | 'av1' | 'dnxhr';
+export type ExportResolution = 'source' | '4K' | '1080p' | '720p' | '480p';
+export type HardwareAccel = 'auto' | 'nvenc' | 'amf' | 'videotoolbox' | 'software';
+
+export interface ExportPresetConfig {
+  label: string;
+  format: ExportFormat;
+  codec: ExportCodec;
+  bitrate: number; // kbps
+  description: string;
+  aspectH?: number; // 0 means use source
+  aspectV?: number;
 }
+
+export const EXPORT_PRESETS: Record<ExportPreset, ExportPresetConfig | null> = {
+  youtube: {
+    label: 'YouTube',
+    format: 'mp4',
+    codec: 'h264',
+    bitrate: 16000,
+    description: 'H.264 16 Mbps — optimized for YouTube upload',
+  },
+  tiktok: {
+    label: 'TikTok / Reels',
+    format: 'mp4',
+    codec: 'h264',
+    bitrate: 6000,
+    description: 'H.264 6 Mbps — 9:16 vertical for social media',
+    aspectH: 9,
+    aspectV: 16,
+  },
+  prores422: {
+    label: 'ProRes 422',
+    format: 'mov',
+    codec: 'prores',
+    bitrate: 0,
+    description: 'Apple ProRes 422 — high-quality mezzanine',
+  },
+  dnxhr: {
+    label: 'DNxHR',
+    format: 'mov',
+    codec: 'dnxhr',
+    bitrate: 0,
+    description: 'Avid DNxHR — professional post-production',
+  },
+  h265: {
+    label: 'H.265 / HEVC',
+    format: 'mp4',
+    codec: 'h265',
+    bitrate: 12000,
+    description: 'H.265/HEVC 12 Mbps — high efficiency',
+  },
+  av1: {
+    label: 'AV1',
+    format: 'mkv',
+    codec: 'av1',
+    bitrate: 8000,
+    description: 'AV1 8 Mbps — next-gen royalty-free codec',
+  },
+  vp9: {
+    label: 'WebM VP9',
+    format: 'webm',
+    codec: 'vp9',
+    bitrate: 10000,
+    description: 'VP9 10 Mbps — web-optimized',
+  },
+  custom: null, // user-defined
+};
+
+export interface ExportSettings {
+  preset: ExportPreset;
+  format: ExportFormat;
+  codec: ExportCodec;
+  resolution: ExportResolution;
+  bitrate: number; // kbps, 0 for VBR/CRF only
+  fps: number;
+  quality: number; // CRF value
+  hardwareAccel: HardwareAccel;
+  twoPass: boolean;
+}
+
+export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  preset: 'youtube',
+  format: 'mp4',
+  codec: 'h264',
+  resolution: 'source',
+  bitrate: 16000,
+  fps: 30,
+  quality: 23,
+  hardwareAccel: 'auto',
+  twoPass: false,
+};
+
+// ── GPU Info ──
+
+export interface GPUInfo {
+  available: boolean;
+  type: HardwareAccel;
+  name: string;
+}
+
+// ── Export Queue ──
+
+export interface QueueItem {
+  id: string;
+  projectName: string;
+  outputPath: string;
+  settings: ExportSettings;
+  status: 'queued' | 'rendering' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  addedAt: string;
+  error?: string;
+}
+
+// ── Version History ──
+
+export interface VersionInfo {
+  id: string;
+  timestamp: string;
+  label: string;
+  fileName: string;
+  version: number;
+}
+
+// ── API ──
 
   export interface CineflowAPI {
     importMedia: () => Promise<ImportMediaResult[]>;
@@ -331,7 +459,9 @@ export interface ExportSettings {
     showSaveDialog: (defaultName: string) => Promise<string | null>;
     showOpenDialog: () => Promise<string | null>;
     getMediaUrl: (filePath: string) => string;
-    exportVideo: (data: string) => Promise<boolean>;
+    exportVideo: (data: string) => Promise<{ queueId: string } | null>;
+    cancelExport: (queueId: string) => Promise<boolean>;
+    getExportQueue: () => Promise<QueueItem[]>;
     syncMulticam: (clips: { clipId: string; filePath: string; sourceStart: number; sourceEnd: number }[]) => Promise<{ clipId: string; offset: number; confidence: number }[]>;
     onExportProgress: (callback: (progress: number) => void) => (() => void);
     onMenuAction: (callback: (action: string) => void) => (() => void);
@@ -340,4 +470,9 @@ export interface ExportSettings {
     loadLut: (filePath: string) => Promise<{ id: string; name: string; size: number } | null>;
     getScopeData: (filePath: string, time: number) => Promise<import('./color').ScopeData>;
     generateProxy: (filePath: string) => Promise<string | null>;
+    detectGPU: () => Promise<GPUInfo>;
+    saveVersion: (data: string) => Promise<boolean>;
+    listVersions: () => Promise<VersionInfo[]>;
+    restoreVersion: (projectId: string, versionId: string) => Promise<string | null>;
+    onExportQueueUpdate: (callback: (queue: QueueItem[]) => void) => (() => void);
   }

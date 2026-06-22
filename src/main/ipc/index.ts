@@ -2,9 +2,17 @@ import { ipcMain, dialog, app, BrowserWindow } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
-import { probeMedia, extractThumbnail, extractFrame, extractFrameAsBase64, exportTimeline, syncClipsByAudio, extractAudioWaveform, generateProxy } from '../ffmpeg'
-import type { ExportClipInfo, ExportOptions } from '../ffmpeg'
-import type { MediaAsset, Project, ImportMediaResult } from '../../shared/types'
+import {
+  probeMedia, extractThumbnail, extractFrame, extractFrameAsBase64,
+  exportTimeline, syncClipsByAudio, extractAudioWaveform, generateProxy,
+  detectGPU,
+} from '../ffmpeg'
+import type { ExportClipInfo } from '../ffmpeg'
+import { saveVersion, listVersions, restoreVersion } from '../version-history'
+import { exportQueue } from '../export-queue'
+import type {
+  MediaAsset, Project, ImportMediaResult, ExportSettings,
+} from '../../shared/types'
 
 const DEFAULT_PROJECTS_PATH = path.join(app.getPath('documents'), 'CineFlow')
 
@@ -13,6 +21,9 @@ export function registerIpcHandlers(): void {
     fs.mkdirSync(DEFAULT_PROJECTS_PATH, { recursive: true })
   }
 
+  // ═══════════════════════════════════════
+  // Media Import (with auto proxy generation)
+  // ═══════════════════════════════════════
   ipcMain.handle('media:import', async (): Promise<ImportMediaResult[]> => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile', 'multiSelections'],
@@ -63,6 +74,27 @@ export function registerIpcHandlers(): void {
             : undefined
 
         assets.push({ asset, thumbnailPath })
+
+        // ── Auto proxy generation for 4K/8K media ──
+        if (mediaType === 'video' && (info.width > 1920 || info.height > 1080)) {
+          setImmediate(async () => {
+            try {
+              const proxyDir = path.join(app.getPath('userData'), 'proxies')
+              if (!fs.existsSync(proxyDir)) fs.mkdirSync(proxyDir, { recursive: true })
+              const proxyPath = path.join(proxyDir, `proxy_${asset.id}${ext}`)
+              if (!fs.existsSync(proxyPath)) {
+                const generated = await generateProxy(filePath, proxyPath)
+                if (generated) {
+                  asset.proxyPath = generated
+                }
+              } else {
+                asset.proxyPath = proxyPath
+              }
+            } catch (err) {
+              console.error('Auto proxy generation failed:', err)
+            }
+          })
+        }
       } catch (err) {
         console.error(`Failed to import ${filePath}:`, err)
       }
@@ -123,6 +155,10 @@ export function registerIpcHandlers(): void {
       const fileName = `${project.name}.cineflow`
       const filePath = path.join(DEFAULT_PROJECTS_PATH, fileName)
       fs.writeFileSync(filePath, JSON.stringify(project, null, 2), 'utf-8')
+
+      // Save to version history
+      saveVersion(project.id, data)
+
       return true
     } catch (err) {
       console.error('Failed to save project:', err)
@@ -148,28 +184,34 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // ═══════════════════════════════════════
+  // Export with Queue
+  // ═══════════════════════════════════════
   ipcMain.handle('export:video', async (_e, data: string) => {
     try {
       const { project, settings } = JSON.parse(data) as {
         project: Project
-        settings: { format: ExportOptions['format']; resolution: ExportOptions['resolution']; quality: number; fps: number }
+        settings: ExportSettings
       }
 
       const videoClips: ExportClipInfo[] = []
-      let sourceWidth = 1920
-      let sourceHeight = 1080
+      let sourceWidth = project.settings.width || 1920
+      let sourceHeight = project.settings.height || 1080
 
       for (const track of project.tracks) {
         if (track.type !== 'video') continue
         for (const clip of track.clips) {
           const asset = project.mediaAssets.find(m => m.id === clip.mediaId)
-          if (!asset) continue
-          if (asset.type === 'image') continue
+          // Allow video+image clips, plus text clips
+          if (!asset && !clip.textData) continue
+          if (asset && asset.type === 'audio') continue
+
           const audioEffects = clip.effects.filter(e =>
             ['equalizer', 'compressor', 'reverb', 'noise-gate', 'delay'].includes(e.type)
           )
+
           videoClips.push({
-            filePath: asset.filePath,
+            filePath: asset?.filePath ?? '',
             sourceStart: clip.sourceStart,
             sourceEnd: clip.sourceEnd,
             speed: clip.speed,
@@ -192,10 +234,22 @@ export function registerIpcHandlers(): void {
             transitionOut: clip.transitionOut
               ? { type: clip.transitionOut.type, duration: clip.transitionOut.duration }
               : null,
+            transitionIn: clip.transitionIn
+              ? { type: clip.transitionIn.type, duration: clip.transitionIn.duration }
+              : null,
             volume: track.volume,
             pan: track.pan,
+            transform: clip.transform ? {
+              positionX: clip.transform.positionX,
+              positionY: clip.transform.positionY,
+              scaleX: clip.transform.scaleX,
+              scaleY: clip.transform.scaleY,
+              rotation: clip.transform.rotation,
+              opacity: clip.transform.opacity,
+            } : undefined,
           })
-          if (asset.width > 0 && asset.height > 0) {
+
+          if (asset && asset.width > 0 && asset.height > 0) {
             sourceWidth = asset.width
             sourceHeight = asset.height
           }
@@ -204,43 +258,60 @@ export function registerIpcHandlers(): void {
 
       if (videoClips.length === 0) {
         dialog.showErrorBox('Export', 'No video clips found to export.')
-        return false
+        return null
       }
 
+      // Pre-fill output path
+      const ext = settings.format === 'webm' ? 'webm' : settings.format === 'mkv' ? 'mkv' : settings.format === 'mov' ? 'mov' : 'mp4'
       const result = await dialog.showSaveDialog({
-        defaultPath: path.join(DEFAULT_PROJECTS_PATH, `${project.name}.${settings.format}`),
-        filters: [{ name: 'Video', extensions: [settings.format] }],
+        defaultPath: path.join(DEFAULT_PROJECTS_PATH, `${project.name}.${ext}`),
+        filters: [{ name: 'Video', extensions: [ext] }],
       })
 
-      if (result.canceled || !result.filePath) return false
+      if (result.canceled || !result.filePath) return null
 
-      const win = BrowserWindow.getFocusedWindow()
-
-      const exportOptions: ExportOptions = {
-        format: settings.format,
-        resolution: settings.resolution,
-        quality: settings.quality,
-        fps: settings.fps,
-        onProgress: (progress) => {
-          win?.webContents.send('export:progress', progress)
+      // Add to queue
+      const queueId = exportQueue.add(
+        project.name,
+        result.filePath,
+        settings,
+        async (queueItem, onProgress) => {
+          await exportTimeline(
+            videoClips,
+            result.filePath,
+            settings,
+            sourceWidth,
+            sourceHeight,
+            () => exportQueue.isCancelled(queueItem.id),
+          )
         },
-      }
+      )
 
-      await exportTimeline(videoClips, result.filePath, exportOptions, sourceWidth, sourceHeight)
-      return true
+      return { queueId }
     } catch (err) {
       console.error('Export failed:', err)
       dialog.showErrorBox('Export Failed', String(err))
-      return false
+      return null
     }
   })
 
+  ipcMain.handle('export:cancel', async (_e, queueId: string) => {
+    return exportQueue.cancel(queueId)
+  })
+
+  ipcMain.handle('export:get-queue', async () => {
+    return exportQueue.getQueue()
+  })
+
+  // ═══════════════════════════════════════
+  // Proxy Management
+  // ═══════════════════════════════════════
   ipcMain.handle('media:generate-proxy', async (_e, filePath: string) => {
     try {
       const ext = path.extname(filePath)
       const proxyDir = path.join(app.getPath('userData'), 'proxies')
       if (!fs.existsSync(proxyDir)) fs.mkdirSync(proxyDir, { recursive: true })
-      const proxyPath = path.join(proxyDir, `proxy_${path.basename(filePath, ext)}.mp4`)
+      const proxyPath = path.join(proxyDir, `proxy_${crypto.randomUUID().substring(0, 8)}_${path.basename(filePath, ext)}.mp4`)
       if (fs.existsSync(proxyPath)) return proxyPath
       await generateProxy(filePath, proxyPath)
       return proxyPath
@@ -249,6 +320,37 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // ═══════════════════════════════════════
+  // GPU Detection
+  // ═══════════════════════════════════════
+  ipcMain.handle('gpu:detect', async () => {
+    return detectGPU()
+  })
+
+  // ═══════════════════════════════════════
+  // Version History
+  // ═══════════════════════════════════════
+  ipcMain.handle('version:save', async (_e, data: string) => {
+    try {
+      const project = JSON.parse(data)
+      const result = saveVersion(project.id, data)
+      return result !== null
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('version:list', async (_e, projectId: string) => {
+    return listVersions(projectId)
+  })
+
+  ipcMain.handle('version:restore', async (_e, projectId: string, versionId: string) => {
+    return restoreVersion(projectId, versionId)
+  })
+
+  // ═══════════════════════════════════════
+  // Waveform
+  // ═══════════════════════════════════════
   ipcMain.handle('media:get-waveform', async (_e, filePath: string, startTime: number, duration: number, targetSampleRate?: number) => {
     try {
       const result = await extractAudioWaveform(filePath, startTime, duration, targetSampleRate ?? 100)
