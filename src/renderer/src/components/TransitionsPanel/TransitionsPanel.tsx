@@ -3,11 +3,11 @@ import { useProjectStore } from '@/store/projectStore'
 import type { Transition } from '@shared/types'
 
 const TRANSITION_TYPES: { type: Transition['type']; label: string; icon: string }[] = [
-  { type: 'dissolve', label: 'Dissolve', icon: '⊞' },
-  { type: 'fade', label: 'Fade', icon: '▣' },
-  { type: 'wipe', label: 'Wipe', icon: '⇨' },
-  { type: 'slide', label: 'Slide', icon: '⤍' },
-  { type: 'zoom', label: 'Zoom', icon: '⊕' },
+  { type: 'dissolve', label: 'Dissolve', icon: '\u229E' },
+  { type: 'fade', label: 'Fade', icon: '\u25A3' },
+  { type: 'wipe', label: 'Wipe', icon: '\u21E8' },
+  { type: 'slide', label: 'Slide', icon: '\u290D' },
+  { type: 'zoom', label: 'Zoom', icon: '\u2295' },
 ]
 
 export default function TransitionsPanel() {
@@ -35,10 +35,45 @@ export default function TransitionsPanel() {
       </h3>
 
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+        <div style={{
+          fontSize: 10, color: 'var(--text-muted)',
+          textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6,
+        }}>
           Types
         </div>
-        <div style={{\n          display: 'flex', alignItems: 'center', gap: 6,\n          fontSize: 10, color: 'var(--text-muted)', marginBottom: 8,\n        }}>\n          <span style={{ textTransform: 'uppercase', letterSpacing: 0.8 }}>Apply to:</span>\n          <button\n            onClick={() => setPosition('in')}\n            style={{\n              padding: '2px 10px', fontSize: 10, fontWeight: 500,\n              background: position === 'in' ? 'var(--accent)' : 'var(--bg-secondary)',\n              color: position === 'in' ? '#fff' : 'var(--text-muted)',\n              borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',\n            }}\n          >In</button>\n          <button\n            onClick={() => setPosition('out')}\n            style={{\n              padding: '2px 10px', fontSize: 10, fontWeight: 500,\n              background: position === 'out' ? 'var(--accent)' : 'var(--bg-secondary)',\n              color: position === 'out' ? '#fff' : 'var(--text-muted)',\n              borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',\n            }}\n          >Out</button>\n        </div>\n        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>\n          {TRANSITION_TYPES.map(t => (\n            <button\n              key={t.type}\n              onClick={() => {\n                if (selectedClip) {\n                  setTransition(selectedClip.id, { type: t.type, duration }, position)\n                }\n              }}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          fontSize: 10, color: 'var(--text-muted)', marginBottom: 8,
+        }}>
+          <span style={{ textTransform: 'uppercase', letterSpacing: 0.8 }}>Apply to:</span>
+          <button
+            onClick={() => setPosition('in')}
+            style={{
+              padding: '2px 10px', fontSize: 10, fontWeight: 500,
+              background: position === 'in' ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: position === 'in' ? '#fff' : 'var(--text-muted)',
+              borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',
+            }}
+          >In</button>
+          <button
+            onClick={() => setPosition('out')}
+            style={{
+              padding: '2px 10px', fontSize: 10, fontWeight: 500,
+              background: position === 'out' ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: position === 'out' ? '#fff' : 'var(--text-muted)',
+              borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',
+            }}
+          >Out</button>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {TRANSITION_TYPES.map(t => (
+            <button
+              key={t.type}
+              onClick={() => {
+                if (selectedClip) {
+                  setTransition(selectedClip.id, { type: t.type, duration }, position)
+                }
+              }}
               disabled={!selectedClip}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
@@ -60,7 +95,10 @@ export default function TransitionsPanel() {
       </div>
 
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+        <div style={{
+          fontSize: 10, color: 'var(--text-muted)',
+          textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6,
+        }}>
           Duration: {duration.toFixed(1)}s
         </div>
         <input
@@ -74,7 +112,10 @@ export default function TransitionsPanel() {
         />
       </div>
 
-      <h4 style={{ fontSize: 10, fontWeight: 600, marginBottom: 8, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8 }}>
+      <h4 style={{
+        fontSize: 10, fontWeight: 600, marginBottom: 8,
+        color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8,
+      }}>
         Selected Clip
       </h4>
       {!selectedClip && (
@@ -92,10 +133,11 @@ export default function TransitionsPanel() {
             {selectedClip.transitionIn && (
               <button
                 onClick={() => setTransition(selectedClip.id, null, 'in')}
-                style={{ marginLeft: 8, background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 11 }}
-              >
-                ×
-              </button>
+                style={{
+                  marginLeft: 8, background: 'none', border: 'none',
+                  color: 'var(--danger)', cursor: 'pointer', fontSize: 11,
+                }}
+              >x</button>
             )}
           </div>
           <div>
@@ -106,10 +148,11 @@ export default function TransitionsPanel() {
             {selectedClip.transitionOut && (
               <button
                 onClick={() => setTransition(selectedClip.id, null, 'out')}
-                style={{ marginLeft: 8, background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 11 }}
-              >
-                ×
-              </button>
+                style={{
+                  marginLeft: 8, background: 'none', border: 'none',
+                  color: 'var(--danger)', cursor: 'pointer', fontSize: 11,
+                }}
+              >x</button>
             )}
           </div>
         </div>

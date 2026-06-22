@@ -1,5 +1,5 @@
 import type { GainPoint } from './audio'
-import type { ColorWheelsParams, RGBACurve } from './color'
+import type { ColorWheelsParams, RGBACurve, PrimaryColorParams, ParametricCurves, LUTData } from './color'
 
 export type EffectType = 'brightness-contrast' | 'hue-saturation' | 'curves' | 'blur' | 'sharpen' | 'crop' | 'transform-2d' | 'equalizer' | 'compressor' | 'reverb' | 'noise-gate' | 'delay';
 
@@ -219,6 +219,10 @@ export interface Clip {
   gainEnvelope?: GainPoint[];
   colorWheels?: ColorWheelsParams;
   rgbCurves?: RGBACurve;
+  parametricCurves?: ParametricCurves;
+  primaryColor?: PrimaryColorParams;
+  primaryColorKeyframes?: Record<string, Keyframe[]>;
+  appliedLutId?: string;
   textData?: TextClipData;
   captions?: Caption[];
 }
@@ -256,6 +260,7 @@ export interface Project {
   settings: ProjectSettings;
   tracks: Track[];
   mediaAssets: MediaAsset[];
+  luts: LUTData[];
   version: number;
 }
 
@@ -303,8 +308,10 @@ export const IPC_CHANNELS = {
   GET_WAVEFORM: 'media:get-waveform',
   GET_SYSTEM_FONTS: 'media:get-system-fonts',
   LOAD_LUT: 'media:load-lut',
+  IMPORT_LUT: 'media:import-lut',
   GET_SCOPE_DATA: 'media:get-scope-data',
   GENERATE_PROXY: 'media:generate-proxy',
+  EXTRACT_FRAME_PIXELS: 'media:extract-frame-pixels',
 } as const;
 
 export interface ImportMediaResult {
@@ -337,7 +344,9 @@ export interface ExportSettings {
     onMenuAction: (callback: (action: string) => void) => (() => void);
     getWaveform: (filePath: string, startTime: number, duration: number, targetSampleRate?: number) => Promise<{ samples: number[]; sampleRate: number; duration: number }>;
     getSystemFonts: () => Promise<string[]>;
-    loadLut: (filePath: string) => Promise<{ id: string; name: string; size: number } | null>;
+    loadLut: (filePath: string) => Promise<{ id: string; name: string; size: number; dataSize: number } | null>;
+    importLut: () => Promise<{ id: string; name: string; filePath: string; size: number; dataSize: number } | null>;
     getScopeData: (filePath: string, time: number) => Promise<import('./color').ScopeData>;
     generateProxy: (filePath: string) => Promise<string | null>;
+    extractFramePixels: (filePath: string, time: number, width: number, height: number) => Promise<{ data: number[]; width: number; height: number } | null>;
   }

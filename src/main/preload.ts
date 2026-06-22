@@ -30,7 +30,10 @@ contextBridge.exposeInMainWorld('cineflow', {
     ipcRenderer.invoke('media:get-waveform', filePath, startTime, duration, targetSampleRate),
   getSystemFonts: () => ipcRenderer.invoke('media:get-system-fonts'),
   loadLut: (filePath: string) => ipcRenderer.invoke('media:load-lut', filePath),
+  importLut: () => ipcRenderer.invoke('media:import-lut'),
   getScopeData: (filePath: string, time: number) =>
     ipcRenderer.invoke('media:get-scope-data', filePath, time),
+  extractFramePixels: (filePath: string, time: number, width: number, height: number) =>
+    ipcRenderer.invoke('media:extract-frame-pixels', filePath, time, width, height),
   generateProxy: (filePath: string) => ipcRenderer.invoke('media:generate-proxy', filePath),
 })

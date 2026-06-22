@@ -207,6 +207,8 @@ export interface ExportTransitionInfo {
   duration: number
 }
 
+import type { PrimaryColorParams, ColorWheelsParams, RGBACurve, CurvePoint } from '../../shared/color'
+
 export interface ExportClipInfo {
   filePath: string
   sourceStart: number
@@ -219,6 +221,10 @@ export interface ExportClipInfo {
   audioEffects?: ExportEffectInfo[]
   volume?: number
   pan?: number
+  primaryColor?: PrimaryColorParams | null
+  colorWheels?: ColorWheelsParams | null
+  rgbCurves?: RGBACurve | null
+  appliedLutPath?: string | null
 }
 
 function buildEffectsFilter(effects: ExportEffectInfo[]): string {
@@ -316,6 +322,120 @@ function buildAudioEffectsFilter(effects: ExportEffectInfo[]): string {
   return filters.join(',')
 }
 
+// ---- Color Correction Filters ----
+
+function buildPrimaryColorFilter(primary: PrimaryColorParams | null | undefined): string {
+  if (!primary) return ''
+  const filters: string[] = []
+  const {
+    exposure = 0,
+    contrast = 0,
+    highlights = 0,
+    shadows = 0,
+    whites = 0,
+    blacks = 0,
+    saturation = 0,
+    temperature = 0,
+    tint = 0,
+  } = primary
+
+  const hasEq = exposure !== 0 || contrast !== 0 || saturation !== 0 || blacks !== 0 || whites !== 0
+  if (hasEq) {
+    // exposure → brightness (ffmpeg eq: -1 to 1 range, exposure mapped from -5..5 → -1..1)
+    const brightness = Math.max(-1, Math.min(1, exposure / 5))
+    // contrast: 0=1.0, -1..1 → 0.5..2.0
+    const contrastVal = 1 + contrast
+    // saturation: 0=1.0, -1..1 → 0..3
+    const saturationVal = 1 + saturation * 2
+    // blacks as gamma adjustment: -1..1 → 0.5..2
+    const gamma = blacks !== 0 ? (1 - blacks * 0.5) : 1
+    filters.push(`eq=brightness=${brightness.toFixed(3)}:contrast=${contrastVal.toFixed(3)}:saturation=${saturationVal.toFixed(3)}:gamma=${gamma.toFixed(3)}`)
+  }
+
+  const hasColorBalance = highlights !== 0 || shadows !== 0 || whites !== 0 || temperature !== 0 || tint !== 0
+  if (hasColorBalance) {
+    // Map highlights/shadows/whites to colorbalance
+    const rh = highlights > 0 ? highlights * 0.3 : 0
+    const gh = highlights > 0 ? highlights * 0.3 : 0
+    const bh = highlights > 0 ? highlights * 0.3 : 0
+    const rs = shadows > 0 ? shadows * 0.3 : 0
+    const gs = shadows > 0 ? shadows * 0.3 : 0
+    const bs = shadows > 0 ? shadows * 0.3 : 0
+    const rm = (whites - blacks) * 0.2
+    const gm = (whites - blacks) * 0.2
+    const bm = (whites - blacks) * 0.2
+
+    // temperature: blue(-) to orange(+) → adjust red/blue balance
+    const tempR = temperature > 0 ? temperature * 0.2 : 0
+    const tempB = temperature < 0 ? -temperature * 0.2 : 0
+    // tint: green(-) to magenta(+) → adjust green/red+blue balance
+    const tintG = tint < 0 ? -tint * 0.2 : 0
+    const tintR = tint > 0 ? tint * 0.2 : 0
+    const tintB = tint > 0 ? tint * 0.2 : 0
+
+    filters.push(`colorbalance=rs=${(rs + tempR + tintR).toFixed(3)}:gs=${(gs + tintG).toFixed(3)}:bs=${(bs + tempB + tintB).toFixed(3)}:rh=${(rh).toFixed(3)}:gh=${(gh).toFixed(3)}:bh=${(bh).toFixed(3)}:rm=${(rm).toFixed(3)}:gm=${(gm).toFixed(3)}:bm=${(bm).toFixed(3)}`)
+  }
+
+  return filters.join(',')
+}
+
+function buildColorWheelsFilter(wheels: ColorWheelsParams | null | undefined): string {
+  if (!wheels) return ''
+  const intensity = (wheels.intensity ?? 50) / 100
+  if (intensity <= 0) return ''
+
+  // Convert wheel [dy, dx] values (where dy = blue/yellow, dx = red/green in typical wheel UI)
+  // to colorbalance RGB offsets
+  const [shadowsY, shadowsX] = wheels.shadows ?? [0, 0]
+  const [midtonesY, midtonesX] = wheels.midtones ?? [0, 0]
+  const [highlightsY, highlightsX] = wheels.highlights ?? [0, 0]
+
+  // Convert polar-like coords to RGB offsets
+  // In a color wheel: top=yellow (-b,+r,+g), bottom=blue (+b,-r,-g), left=cyan (-r,+g,+b), right=red (+r,-g,-b)
+  const wheelToRGB = (dy: number, dx: number): [number, number, number] => {
+    const r = dx * intensity
+    const g = (-dx * 0.5 + dy * 0.866) * intensity
+    const b = (-dx * 0.5 - dy * 0.866) * intensity
+    return [
+      Math.max(-1, Math.min(1, r)),
+      Math.max(-1, Math.min(1, g)),
+      Math.max(-1, Math.min(1, b)),
+    ]
+  }
+
+  const [sr, sg, sb] = wheelToRGB(shadowsY, shadowsX)
+  const [mr, mg, mb] = wheelToRGB(midtonesY, midtonesX)
+  const [hr, hg, hb] = wheelToRGB(highlightsY, highlightsX)
+
+  return `colorbalance=rs=${sr.toFixed(3)}:gs=${sg.toFixed(3)}:bs=${sb.toFixed(3)}:rm=${mr.toFixed(3)}:gm=${mg.toFixed(3)}:bm=${mb.toFixed(3)}:rh=${hr.toFixed(3)}:gh=${hg.toFixed(3)}:bh=${hb.toFixed(3)}`
+}
+
+function buildCurvesFilter(curves: RGBACurve | null | undefined): string {
+  if (!curves) return ''
+
+  const buildCurveStr = (pts: CurvePoint[] | undefined, label: string): string => {
+    if (!pts || pts.length < 2) return ''
+    // Sort by x
+    const sorted = [...pts].sort((a, b) => a.x - b.x)
+    const parts = sorted.map(p => `${p.x.toFixed(3)}/${p.y.toFixed(3)}`)
+    return `${label}='${parts.join(' ')}'`
+  }
+
+  const parts: string[] = []
+  const master = buildCurveStr(curves.master, 'master')
+  const red = buildCurveStr(curves.red, 'red')
+  const green = buildCurveStr(curves.green, 'green')
+  const blue = buildCurveStr(curves.blue, 'blue')
+
+  if (master) parts.push(master)
+  if (red) parts.push(red)
+  if (green) parts.push(green)
+  if (blue) parts.push(blue)
+
+  if (parts.length === 0) return ''
+  return `curves=${parts.join(':')}`
+}
+
 export interface ExportOptions {
   format: 'mp4' | 'mov' | 'avi' | 'webm'
   resolution: 'source' | '1080p' | '720p' | '480p'
@@ -371,6 +491,28 @@ function exportSingleClip(
     const atempo = Math.min(2, clip.speed)
 
     const vfFilters: string[] = [`setpts=${ptsFactor}*PTS`, `scale=${outW}:${outH}`]
+
+    // Apply color correction filters
+    const primaryFilter = buildPrimaryColorFilter(clip.primaryColor)
+    if (primaryFilter) {
+      vfFilters.push(primaryFilter)
+    }
+
+    const wheelsFilter = buildColorWheelsFilter(clip.colorWheels)
+    if (wheelsFilter) {
+      vfFilters.push(wheelsFilter)
+    }
+
+    const curvesFilter = buildCurvesFilter(clip.rgbCurves)
+    if (curvesFilter) {
+      vfFilters.push(curvesFilter)
+    }
+
+    // Apply LUT
+    if (clip.appliedLutPath) {
+      vfFilters.push(`lut3d=file='${clip.appliedLutPath.replace(/'/g, "\\'")}'`)
+    }
+
     if (clip.effects && clip.effects.length > 0) {
       const ef = buildEffectsFilter(clip.effects)
       if (ef) {
