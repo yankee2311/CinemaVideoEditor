@@ -194,6 +194,12 @@ export function registerIpcHandlers(): void {
               : null,
             volume: track.volume,
             pan: track.pan,
+            primaryColor: clip.primaryColor ?? null,
+            colorWheels: clip.colorWheels ?? null,
+            rgbCurves: clip.rgbCurves ?? null,
+            appliedLutPath: clip.appliedLutId
+              ? (project.luts ?? []).find(l => l.id === clip.appliedLutId)?.filePath ?? null
+              : null,
           })
           if (asset.width > 0 && asset.height > 0) {
             sourceWidth = asset.width
@@ -276,7 +282,33 @@ export function registerIpcHandlers(): void {
       const lines = data.trim().split('\n')
       const sizeLine = lines.find(l => l.toLowerCase().startsWith('lut3d'))
       const size = sizeLine ? parseInt(sizeLine.split(' ')[1] || '33') : 33
-      return { id: path.basename(filePath, path.extname(filePath)), name: path.basename(filePath), size }
+      return { id: path.basename(filePath, path.extname(filePath)), name: path.basename(filePath), size, dataSize: size * size * size * 3 }
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('media:import-lut', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [
+        { name: 'LUT Files', extensions: ['cube', '3dl', 'look', 'csp', 'lut'] },
+      ],
+    })
+    if (result.canceled || !result.filePaths.length) return null
+    const filePath = result.filePaths[0]
+    try {
+      const data = fs.readFileSync(filePath, 'utf-8')
+      const lines = data.trim().split('\n')
+      const sizeLine = lines.find(l => /^lut3d|^lut_3d|^lut3d_size/i.test(l.trim()))
+      const size = sizeLine ? parseInt(sizeLine.split(/\s+/)[1] || '33') : 33
+      return {
+        id: crypto.randomUUID(),
+        name: path.basename(filePath),
+        filePath,
+        size,
+        dataSize: size * size * size * 3,
+      }
     } catch {
       return null
     }
@@ -292,6 +324,33 @@ export function registerIpcHandlers(): void {
       }
     } catch {
       return { histogram: { r: [], g: [], b: [], luma: [] }, waveform: [], vectorscope: [] }
+    }
+  })
+
+  ipcMain.handle('media:extract-frame-pixels', async (_e, filePath: string, time: number, width: number, height: number) => {
+    try {
+      const tmpPath = path.join(app.getPath('temp'), `cineflow_pixels_${crypto.randomUUID()}.raw`)
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = require('fluent-ffmpeg')
+        ffmpeg(filePath)
+          .inputOptions([`-ss ${time}`])
+          .outputOptions([
+            '-vframes 1',
+            '-f rawvideo',
+            '-pix_fmt rgba',
+            `-s ${width}x${height}`,
+          ])
+          .output(tmpPath)
+          .on('end', () => resolve())
+          .on('error', reject)
+          .run()
+      })
+      const buffer = fs.readFileSync(tmpPath)
+      try { fs.unlinkSync(tmpPath) } catch {}
+      const data = Array.from(new Uint8Array(buffer))
+      return { data, width, height }
+    } catch {
+      return null
     }
   })
 
