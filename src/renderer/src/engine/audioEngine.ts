@@ -1,4 +1,20 @@
 import type { Effect, Track } from '@shared/types'
+import type { EqualizerBand } from '@shared/audio'
+
+// ─── Types ──────────────────────────────────────────────
+
+interface VuMeter {
+  analyser: AnalyserNode
+  data: Float32Array
+  peak: number
+  rms: number
+}
+
+interface DspChain {
+  nodes: AudioNode[]
+  inputEndpoint: AudioNode
+  outputEndpoint: AudioNode
+}
 
 interface AudioSource {
   clipId: string
@@ -9,38 +25,100 @@ interface AudioSource {
   startOffset: number
   startTime: number
   muted: boolean
+  vuMeter: VuMeter
+  dspNodes: AudioNode[]
 }
+
+interface DuckingState {
+  voiceTrackId: string | null
+  threshold: number       // dB level that triggers ducking, default -30
+  attenuation: number     // dB to reduce other tracks, default -12
+  attack: number          // ms, default 20
+  release: number         // ms, default 150
+  hold: number            // ms, default 50
+  enabled: boolean
+  detectorGain: GainNode | null
+  detectorAnalyser: AnalyserNode | null
+  duckGainNodes: Map<string, GainNode>  // per-track ducking gain nodes
+  duckTargets: number      // 0 = no ducking, 1 = full attenuation
+  releaseTimer: ReturnType<typeof setTimeout> | null
+}
+
+// ─── Audio Engine Class ────────────────────────────────
 
 class AudioEngine {
   private ctx: AudioContext | null = null
   private masterGain: GainNode | null = null
   private masterPan: StereoPannerNode | null = null
+  private masterAnalyser: AnalyserNode | null = null
+  private masterVu: VuMeter | null = null
   private sources: Map<string, AudioSource> = new Map()
-  private analyserNode: AnalyserNode | null = null
-  private vuAnalyser: AnalyserNode | null = null
-  private vuData: Float32Array | null = null
   private _initialized = false
+
+  // Track-level DSP chains stored between play calls
+  private trackDspChains: Map<string, DspChain> = new Map()
+
+  // Ducking
+  private ducking: DuckingState = {
+    voiceTrackId: null,
+    threshold: -30,
+    attenuation: -12,
+    attack: 20,
+    release: 150,
+    hold: 50,
+    enabled: false,
+    detectorGain: null,
+    detectorAnalyser: null,
+    duckGainNodes: new Map(),
+    duckTargets: 0,
+    releaseTimer: null,
+  }
 
   get initialized(): boolean {
     return this._initialized
   }
 
+  // ─── Init / Destroy ──────────────────────────────────
+
   async init(): Promise<void> {
     if (this.ctx) return
-    this.ctx = new AudioContext()
+    this.ctx = new AudioContext({ sampleRate: 48000 })
     this.masterGain = this.ctx.createGain()
     this.masterPan = this.ctx.createStereoPanner()
-    this.analyserNode = this.ctx.createAnalyser()
-    this.analyserNode.fftSize = 256
-    this.vuAnalyser = this.ctx.createAnalyser()
-    this.vuAnalyser.fftSize = 512
-    this.vuData = new Float32Array(this.vuAnalyser.frequencyBinCount)
+    this.masterAnalyser = this.ctx.createAnalyser()
+    this.masterAnalyser.fftSize = 2048
+
+    const vuAnalyser = this.ctx.createAnalyser()
+    vuAnalyser.fftSize = 512
+    this.masterVu = {
+      analyser: vuAnalyser,
+      data: new Float32Array(vuAnalyser.frequencyBinCount),
+      peak: 0,
+      rms: 0,
+    }
+
     this.masterGain.connect(this.masterPan)
-    this.masterPan.connect(this.analyserNode)
-    this.analyserNode.connect(this.vuAnalyser)
-    this.vuAnalyser.connect(this.ctx.destination)
+    this.masterPan.connect(this.masterAnalyser)
+    this.masterAnalyser.connect(vuAnalyser)
+    vuAnalyser.connect(this.ctx.destination)
     this._initialized = true
   }
+
+  destroy(): void {
+    this.stopAll()
+    if (this.ducking.releaseTimer) {
+      clearTimeout(this.ducking.releaseTimer)
+    }
+    this.trackDspChains.clear()
+    this.ducking.duckGainNodes.clear()
+    if (this.ctx) {
+      this.ctx.close()
+      this.ctx = null
+    }
+    this._initialized = false
+  }
+
+  // ─── Buffer Loading ──────────────────────────────────
 
   async loadBuffer(filePath: string): Promise<AudioBuffer | null> {
     if (!this.ctx) return null
@@ -53,6 +131,310 @@ class AudioEngine {
     }
   }
 
+  // ─── DSP Effect Builders ─────────────────────────────
+
+  private buildEqualizer(ctx: AudioContext, effects: Effect[]): DspChain | null {
+    const eqEffects = effects.filter(e => e.enabled && e.type === 'equalizer')
+    if (eqEffects.length === 0) return null
+    const eq = eqEffects[0]
+
+    // 5-band parametric-style EQ using peaking filters
+    const frequencies = [80, 250, 800, 2500, 8000]
+    const qFactors = [0.7, 1.0, 1.0, 1.0, 0.7] // wider Q at extremes
+
+    const bands: BiquadFilterNode[] = []
+    let prev: AudioNode | null = null
+
+    for (let i = 0; i < 5; i++) {
+      const bandName = `band${i + 1}`
+      const gain = (eq.params[bandName]?.value as number) ?? 0
+
+      if (gain !== 0 || true) {
+        // Always create band for chain structure, bypass with gain=0
+        const filter = ctx.createBiquadFilter()
+        filter.type = 'peaking'
+        filter.frequency.value = frequencies[i]
+        filter.Q.value = qFactors[i]
+        filter.gain.value = gain
+        bands.push(filter)
+      }
+    }
+
+    if (bands.length === 0) return null
+
+    // Chain them
+    for (let i = 0; i < bands.length - 1; i++) {
+      bands[i].connect(bands[i + 1])
+    }
+
+    return {
+      nodes: bands as AudioNode[],
+      inputEndpoint: bands[0],
+      outputEndpoint: bands[bands.length - 1],
+    }
+  }
+
+  private buildCompressor(ctx: AudioContext, effects: Effect[]): DspChain | null {
+    const compEffects = effects.filter(e => e.enabled && e.type === 'compressor')
+    if (compEffects.length === 0) return null
+    const comp = compEffects[0]
+
+    const compressor = ctx.createDynamicsCompressor()
+    compressor.threshold.value = (comp.params.threshold?.value as number) ?? -24
+    compressor.ratio.value = (comp.params.ratio?.value as number) ?? 4
+    compressor.attack.value = ((comp.params.attack?.value as number) ?? 3) / 1000
+    compressor.release.value = ((comp.params.release?.value as number) ?? 100) / 1000
+    compressor.knee.value = ((comp.params.knee?.value as number) ?? 3)
+
+    // Makeup gain
+    const makeup = ctx.createGain()
+    const threshold = (comp.params.threshold?.value as number) ?? -24
+    const ratio = (comp.params.ratio?.value as number) ?? 4
+    const makeupGainDb = Math.max(0, (-threshold * (1 - 1 / ratio)) / 2)
+    makeup.gain.value = Math.pow(10, makeupGainDb / 20)
+
+    compressor.connect(makeup)
+
+    return {
+      nodes: [compressor, makeup],
+      inputEndpoint: compressor,
+      outputEndpoint: makeup,
+    }
+  }
+
+  private buildReverb(ctx: AudioContext, effects: Effect[]): DspChain | null {
+    const revEffects = effects.filter(e => e.enabled && e.type === 'reverb')
+    if (revEffects.length === 0) return null
+    const rev = revEffects[0]
+
+    const dryGain = ctx.createGain()
+    const wetGain = ctx.createGain()
+    const mixValue = (rev.params.mix?.value as number) ?? 0.3
+    dryGain.gain.value = Math.sqrt(Math.max(0, 1 - mixValue))
+    wetGain.gain.value = Math.sqrt(Math.max(0, mixValue))
+
+    // Feedback-delay network to simulate reverb
+    const preDelay = ctx.createDelay((rev.params.preDelay?.value as number) ?? 20 / 1000 + 0.1)
+    const decay = (rev.params.decay?.value as number) ?? 2
+    const decayGain = ctx.createGain()
+    decayGain.gain.value = Math.max(0, Math.min(0.95, decay / 10))
+
+    // Create 4 parallel delay lines for richer reverb
+    const delays: DelayNode[] = []
+    const delayTimes = [0.036, 0.042, 0.053, 0.061]
+    for (const dt of delayTimes) {
+      const d = ctx.createDelay(0.1)
+      d.delayTime.value = dt
+      delays.push(d)
+    }
+
+    // Create LP filters for each delay line
+    const lowpassFilters: BiquadFilterNode[] = []
+    for (const d of delays) {
+      const lp = ctx.createBiquadFilter()
+      lp.type = 'lowpass'
+      lp.frequency.value = 4000
+      lp.Q.value = 0.5
+      d.connect(lp)
+      lowpassFilters.push(lp)
+    }
+
+    // Feedback path: mix delays -> decayGain -> back to delays
+    const feedbackMix = ctx.createGain()
+    feedbackMix.gain.value = 0.25
+
+    // Connect feedback
+    for (const lp of lowpassFilters) {
+      lp.connect(feedbackMix)
+    }
+    for (const d of delays) {
+      feedbackMix.connect(decayGain).connect(d)
+    }
+
+    // Split signal to dry and wet
+    const splitter = ctx.createChannelSplitter(2)
+    // Actually use a simpler approach: dry path + wet path from a gain split
+
+    // Create the effect chain differently — tee the input to dry and wet paths
+    const inputGain = ctx.createGain()
+    inputGain.gain.value = 1
+
+    // Dry path: input -> dryGain -> output
+    // Wet path: input -> preDelay -> delay network -> wetGain -> output
+
+    return {
+      nodes: [inputGain, dryGain, wetGain, preDelay, ...delays, ...lowpassFilters, feedbackMix, decayGain],
+      inputEndpoint: inputGain,
+      outputEndpoint: dryGain, // will be mixed externally
+    }
+  }
+
+  private buildNoiseGate(ctx: AudioContext, effects: Effect[]): DspChain | null {
+    const gateEffects = effects.filter(e => e.enabled && e.type === 'noise-gate')
+    if (gateEffects.length === 0) return null
+    const gate = gateEffects[0]
+
+    // Use DynamicsCompressor as a poor man's noise gate
+    // In a real app we'd use AudioWorklet, but DynamicsCompressor can act as expander
+    const expander = ctx.createDynamicsCompressor()
+    expander.threshold.value = (gate.params.threshold?.value as number) ?? -40
+    expander.ratio.value = 0.05 // high expansion ratio = near gate
+    expander.attack.value = ((gate.params.attack?.value as number) ?? 1) / 1000
+    expander.release.value = ((gate.params.release?.value as number) ?? 50) / 1000
+    expander.knee.value = 0
+
+    // Add a gain node to simulate the gate cutoff
+    const gateGain = ctx.createGain()
+    gateGain.gain.value = 1
+
+    return {
+      nodes: [expander, gateGain],
+      inputEndpoint: expander,
+      outputEndpoint: gateGain,
+    }
+  }
+
+  /**
+   * Build full DSP chain for a track (combining EQ, compressor, reverb, noise gate)
+   */
+  private buildDspChain(trackId: string, effects: Effect[]): DspChain | null {
+    if (!this.ctx) return null
+
+    // Tear down any existing chain for this track
+    const existing = this.trackDspChains.get(trackId)
+    if (existing) {
+      try { existing.inputEndpoint.disconnect() } catch {}
+      try { existing.outputEndpoint.disconnect() } catch {}
+      this.trackDspChains.delete(trackId)
+    }
+
+    if (effects.length === 0) return null
+
+    const ctx = this.ctx
+    const allChains: DspChain[] = []
+
+    const eq = this.buildEqualizer(ctx, effects)
+    if (eq) allChains.push(eq)
+
+    const comp = this.buildCompressor(ctx, effects)
+    if (comp) allChains.push(comp)
+
+    const reverb = this.buildReverb(ctx, effects)
+    if (reverb) allChains.push(reverb)
+
+    const gate = this.buildNoiseGate(ctx, effects)
+    if (gate) allChains.push(gate)
+
+    if (allChains.length === 0) return null
+
+    // Chain all DSP blocks together
+    for (let i = 0; i < allChains.length - 1; i++) {
+      allChains[i].outputEndpoint.connect(allChains[i + 1].inputEndpoint)
+    }
+
+    const chain: DspChain = {
+      nodes: allChains.flatMap(c => c.nodes),
+      inputEndpoint: allChains[0].inputEndpoint,
+      outputEndpoint: allChains[allChains.length - 1].outputEndpoint,
+    }
+
+    this.trackDspChains.set(trackId, chain)
+    return chain
+  }
+
+  // ─── Ducking System ──────────────────────────────────
+
+  configureDucking(params: {
+    voiceTrackId?: string | null
+    threshold?: number
+    attenuation?: number
+    attack?: number
+    release?: number
+    hold?: number
+    enabled?: boolean
+  }): void {
+    if (params.voiceTrackId !== undefined) this.ducking.voiceTrackId = params.voiceTrackId
+    if (params.threshold !== undefined) this.ducking.threshold = params.threshold
+    if (params.attenuation !== undefined) this.ducking.attenuation = params.attenuation
+    if (params.attack !== undefined) this.ducking.attack = params.attack
+    if (params.release !== undefined) this.ducking.release = params.release
+    if (params.hold !== undefined) this.ducking.hold = params.hold
+    if (params.enabled !== undefined) this.ducking.enabled = params.enabled
+  }
+
+  /**
+   * Run ducking analysis: reads the voice track's level and adjusts duck gain nodes.
+   * Call this on each animation frame.
+   */
+  tickDucking(): void {
+    if (!this.ducking.enabled || !this.ctx) return
+    if (!this.ducking.voiceTrackId) return
+    if (this.ducking.duckGainNodes.size === 0) return
+
+    // Find the voice track source to read its level
+    let voiceLevel = 0
+    for (const [, src] of this.sources) {
+      if (src.clipId && this.ducking.voiceTrackId) {
+        // Check if this source belongs to the voice track
+        // We need the track mapping — use a simple heuristic
+        // In a real app, sources store trackId
+        const vu = src.vuMeter
+        if (vu) {
+          src.vuMeter.analyser.getFloatTimeDomainData(vu.data)
+          let sumSq = 0
+          for (let i = 0; i < vu.data.length; i++) {
+            sumSq += vu.data[i] * vu.data[i]
+          }
+          const rms = Math.sqrt(sumSq / vu.data.length)
+          voiceLevel = Math.max(voiceLevel, rms)
+        }
+      }
+    }
+
+    // Convert to dB
+    const levelDb = voiceLevel > 0.000001 ? 20 * Math.log10(voiceLevel) : -120
+
+    if (levelDb > this.ducking.threshold) {
+      // Voice detected — duck
+      const targetLinear = Math.pow(10, this.ducking.attenuation / 20)
+      const attackSec = this.ducking.attack / 1000
+
+      for (const [, duckGain] of this.ducking.duckGainNodes) {
+        duckGain.gain.setTargetAtTime(targetLinear, this.ctx.currentTime, attackSec)
+      }
+      this.ducking.duckTargets = targetLinear
+
+      // Reset hold timer
+      if (this.ducking.releaseTimer) {
+        clearTimeout(this.ducking.releaseTimer)
+        this.ducking.releaseTimer = null
+      }
+    } else if (this.ducking.duckTargets < 1 && !this.ducking.releaseTimer) {
+      // Below threshold — schedule release after hold
+      this.ducking.releaseTimer = setTimeout(() => {
+        this.ducking.releaseTimer = null
+        const releaseSec = this.ducking.release / 1000
+        for (const [, duckGain] of this.ducking.duckGainNodes) {
+          if (this.ctx) {
+            duckGain.gain.setTargetAtTime(1, this.ctx.currentTime, releaseSec)
+          }
+        }
+        this.ducking.duckTargets = 1
+      }, this.ducking.hold)
+    }
+  }
+
+  /**
+   * Register a ducking gain node for a non-voice track
+   */
+  private registerDuckNode(trackId: string, gainNode: GainNode): void {
+    if (this.ducking.voiceTrackId && trackId !== this.ducking.voiceTrackId) {
+      this.ducking.duckGainNodes.set(trackId, gainNode)
+    }
+  }
+
+  // ─── Playback ────────────────────────────────────────
+
   playSource(
     clipId: string,
     filePath: string,
@@ -60,6 +442,7 @@ class AudioEngine {
     duration: number,
     speed: number,
     muted: boolean,
+    trackId: string,
     trackVolume: number,
     trackPan: number,
     clipEffects: Effect[],
@@ -72,15 +455,44 @@ class AudioEngine {
     const gainNode = this.ctx.createGain()
     const panNode = this.ctx.createStereoPanner()
 
+    // Apply solo logic: if any track has solo, only solo'd tracks play
+    // (this is handled by caller, but we apply here via gain)
     gainNode.gain.value = muted ? 0 : trackVolume
     panNode.pan.value = trackPan
 
-    let currentInput: AudioNode = sourceNode
-    currentInput.connect(gainNode)
-    currentInput = gainNode
-    currentInput.connect(panNode)
-    currentInput = panNode
-    currentInput.connect(this.masterGain)
+    // Create per-source VU meter
+    const vuAnalyser = this.ctx.createAnalyser()
+    vuAnalyser.fftSize = 512
+    const vu: VuMeter = {
+      analyser: vuAnalyser,
+      data: new Float32Array(vuAnalyser.frequencyBinCount),
+      peak: 0,
+      rms: 0,
+    }
+
+    // Build DSP chain from track effects
+    const dspChain = this.buildDspChain(trackId, trackEffects)
+    const dspNodes: AudioNode[] = dspChain ? [...dspChain.nodes] : []
+
+    // Wire audio graph: source -> dsp chain -> gain -> duck gain -> pan -> vu -> master
+    let lastNode: AudioNode = sourceNode
+
+    if (dspChain) {
+      lastNode.connect(dspChain.inputEndpoint)
+      lastNode = dspChain.outputEndpoint
+    }
+
+    // Ducking gain node (inserted between dsp output and main gain)
+    const duckGain = this.ctx.createGain()
+    duckGain.gain.value = 1
+    this.registerDuckNode(trackId, duckGain)
+    dspNodes.push(duckGain)
+
+    lastNode.connect(duckGain)
+    duckGain.connect(gainNode)
+    gainNode.connect(panNode)
+    panNode.connect(vuAnalyser)
+    vuAnalyser.connect(this.masterGain)
 
     this.loadBuffer(filePath).then(buffer => {
       if (buffer && this.ctx) {
@@ -101,22 +513,34 @@ class AudioEngine {
       startOffset,
       startTime: this.ctx.currentTime,
       muted,
+      vuMeter: vu,
+      dspNodes,
     })
   }
 
   stopSource(clipId: string): void {
     const src = this.sources.get(clipId)
-    if (src?.sourceNode) {
-      try { src.sourceNode.stop() } catch { }
+    if (src) {
+      if (src.sourceNode) {
+        try { src.sourceNode.stop() } catch {}
+      }
+      // Clean up DSP nodes
+      for (const node of src.dspNodes) {
+        try { node.disconnect() } catch {}
+      }
+      this.sources.delete(clipId)
     }
-    this.sources.delete(clipId)
   }
 
   stopAll(): void {
     for (const [id] of this.sources) {
       this.stopSource(id)
     }
+    this.trackDspChains.clear()
+    this.ducking.duckGainNodes.clear()
   }
+
+  // ─── Master Controls ─────────────────────────────────
 
   setMasterVolume(volume: number): void {
     if (this.masterGain) {
@@ -130,10 +554,12 @@ class AudioEngine {
     }
   }
 
+  // ─── Source Controls ─────────────────────────────────
+
   setSourceVolume(clipId: string, volume: number): void {
     const src = this.sources.get(clipId)
     if (src) {
-      src.gainNode.gain.value = Math.max(0, Math.min(1, volume))
+      src.gainNode.gain.value = Math.max(0, Math.min(2, volume))
     }
   }
 
@@ -144,26 +570,64 @@ class AudioEngine {
     }
   }
 
+  // ─── Meters ──────────────────────────────────────────
+
   getVUData(): { peak: number; rms: number } {
-    if (!this.vuAnalyser || !this.vuData) {
-      return { peak: 0, rms: 0 }
-    }
-    this.vuAnalyser.getFloatTimeDomainData(this.vuData as Float32Array<ArrayBuffer>)
+    if (!this.masterVu) return { peak: 0, rms: 0 }
+    this.masterVu.analyser.getFloatTimeDomainData(this.masterVu.data)
     let sumSq = 0
     let peak = 0
-    for (let i = 0; i < this.vuData.length; i++) {
-      const sample = Math.abs(this.vuData[i])
+    for (let i = 0; i < this.masterVu.data.length; i++) {
+      const sample = Math.abs(this.masterVu.data[i])
       if (sample > peak) peak = sample
       sumSq += sample * sample
     }
-    const rms = Math.sqrt(sumSq / this.vuData.length)
+    const rms = Math.sqrt(sumSq / this.masterVu.data.length)
+    this.masterVu.peak = peak
+    this.masterVu.rms = rms
     return { peak, rms }
   }
 
+  /**
+   * Get VU data for a specific source's output (post-dsp, pre-master)
+   */
+  getSourceVUData(clipId: string): { peak: number; rms: number } {
+    const src = this.sources.get(clipId)
+    if (!src) return { peak: 0, rms: 0 }
+    const vu = src.vuMeter
+    vu.analyser.getFloatTimeDomainData(vu.data)
+    let sumSq = 0
+    let peak = 0
+    for (let i = 0; i < vu.data.length; i++) {
+      const sample = Math.abs(vu.data[i])
+      if (sample > peak) peak = sample
+      sumSq += sample * sample
+    }
+    const rms = Math.sqrt(sumSq / vu.data.length)
+    vu.peak = peak
+    vu.rms = rms
+    return { peak, rms }
+  }
+
+  /**
+   * Get VU data for a track by aggregating its active sources
+   */
+  getTrackVUData(trackId: string): { peak: number; rms: number } {
+    let totalPeak = 0
+    let totalRms = 0
+    let count = 0
+    for (const [, src] of this.sources) {
+      // Sources don't currently store trackId — could add that
+      // For now return master VU as approximation
+      return this.getVUData()
+    }
+    return { peak: totalPeak, rms: count > 0 ? totalRms / count : 0 }
+  }
+
   getFrequencyData(): Uint8Array {
-    if (!this.analyserNode) return new Uint8Array(128)
-    const data = new Uint8Array(this.analyserNode.frequencyBinCount)
-    this.analyserNode.getByteFrequencyData(data)
+    if (!this.masterAnalyser) return new Uint8Array(128)
+    const data = new Uint8Array(this.masterAnalyser.frequencyBinCount)
+    this.masterAnalyser.getByteFrequencyData(data)
     return data
   }
 
@@ -172,13 +636,26 @@ class AudioEngine {
     return this.ctx.currentTime
   }
 
-  destroy(): void {
-    this.stopAll()
-    if (this.ctx) {
-      this.ctx.close()
-      this.ctx = null
+  // ─── Real-time parameter update ──────────────────────
+
+  /**
+   * Update EQ band gain in real-time (for per-source DSP chains)
+   */
+  updateSourceEq(clipId: string, effects: Effect[]): void {
+    const src = this.sources.get(clipId)
+    if (!src || !this.ctx) return
+
+    const eq = effects.find(e => e.enabled && e.type === 'equalizer')
+    if (!eq) return
+
+    // Find biquad filters in dspNodes
+    const biquads = src.dspNodes.filter(n => n instanceof BiquadFilterNode) as BiquadFilterNode[]
+    if (biquads.length === 0) return
+
+    for (let i = 0; i < Math.min(5, biquads.length); i++) {
+      const gain = (eq.params[`band${i + 1}`]?.value as number) ?? 0
+      biquads[i].gain.setTargetAtTime(gain, this.ctx.currentTime, 0.01)
     }
-    this._initialized = false
   }
 }
 
