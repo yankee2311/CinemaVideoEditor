@@ -1,0 +1,177 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #242424;
+  --bg-tertiary: #2c2c2c;
+  --bg-hover: #333333;
+  --bg-active: #404040;
+  --border-color: #3a3a3a;
+  --border-focus: #4a9eff;
+  --text-primary: #e0e0e0;
+  --text-secondary: #999999;
+  --text-muted: #666666;
+  --text-label: #555555;
+  --accent: #4a9eff;
+  --accent-hover: #3a8eef;
+  --danger: #e74c3c;
+  --success: #2ecc71;
+  --warning: #f39c12;
+  --timeline-bg: #1e1e1e;
+  --track-bg: #2a2a2a;
+  --track-alt: #282828;
+  --clip-video: #3d8fd4;
+  --clip-video-selected: #5aaeff;
+  --clip-audio: #27ae60;
+  --clip-audio-selected: #34d058;
+  --clip-text: #e67e22;
+  --clip-text-selected: #f39c12;
+  --playhead-color: #ff3333;
+  --playhead-shadow: rgba(255, 51, 51, 0.3);
+  --selection-color: rgba(74, 158, 255, 0.3);
+  --waveform-color: rgba(255, 255, 255, 0.4);
+  --thumbnail-opacity: 0.25;
+  --clip-border-radius: 4px;
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 13px;
+  line-height: 1.5;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input, textarea, select {
+  font-family: var(--font-family);
+  font-size: 13px;
+}
+
+input[type="text"],
+input[type="number"],
+select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  border-color: var(--accent);
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+button {
+  font-family: var(--font-family);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  font-size: 13px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.label-drag {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.label-drag:hover {
+  color: var(--accent) !important;
+}
+
+.label-drag:active {
+  color: var(--text-primary) !important;
+}
+
+/* Light theme */
+[data-theme="light"] {
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f0f0;
+  --bg-hover: #e8e8e8;
+  --bg-active: #dcdcdc;
+  --border-color: #d0d0d0;
+  --border-focus: #4a9eff;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666666;
+  --text-muted: #999999;
+  --text-label: #aaaaaa;
+  --accent: #4a9eff;
+  --accent-hover: #3a8eef;
+  --timeline-bg: #ececec;
+  --track-bg: #e2e2e2;
+  --track-alt: #dfdfdf;
+  --playhead-shadow: rgba(255, 51, 51, 0.2);
+  --selection-color: rgba(74, 158, 255, 0.2);
+  --waveform-color: rgba(0, 0, 0, 0.2);
+  --thumbnail-opacity: 0.4;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.15);
+}
+
+/* Animations */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
