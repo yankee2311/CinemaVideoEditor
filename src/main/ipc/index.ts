@@ -267,13 +267,6 @@ export function registerIpcHandlers(): void {
             appliedLutPath: clip.appliedLutId
               ? (project.luts ?? []).find(l => l.id === clip.appliedLutId)?.filePath ?? null
               : null,
-          })
-          if (asset.width > 0 && asset.height > 0) {
-            sourceWidth = Math.max(sourceWidth, asset.width)
-            sourceHeight = Math.max(sourceHeight, asset.height)
-          }
-        }
-      }
             transform: clip.transform ? {
               positionX: clip.transform.positionX,
               positionY: clip.transform.positionY,
@@ -283,10 +276,9 @@ export function registerIpcHandlers(): void {
               opacity: clip.transform.opacity,
             } : undefined,
           })
-
-          if (asset && asset.width > 0 && asset.height > 0) {
-            sourceWidth = asset.width
-            sourceHeight = asset.height
+          if (asset.width > 0 && asset.height > 0) {
+            sourceWidth = Math.max(sourceWidth, asset.width)
+            sourceHeight = Math.max(sourceHeight, asset.height)
           }
         }
       }

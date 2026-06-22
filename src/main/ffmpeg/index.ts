@@ -7,7 +7,21 @@ import { app, BrowserWindow } from 'electron'
 import { detectGPU, getEncoder, supportsHardwareAccel } from './hardware'
 import type { GPUInfo, HardwareAccel, ExportSettings } from '../../shared/types'
 
-const ffmpegDir = path.join(app.getAppPath(), 'resources', 'ffmpeg')
+const appPath = app.getAppPath()
+const cwd = process.cwd()
+const searchPaths = [appPath, cwd]
+// In dev mode, app.getAppPath() may differ from cwd; try both
+let ffmpegDir = ''
+for (const base of searchPaths) {
+  const candidate = path.join(base, 'resources', 'ffmpeg')
+  if (fs.existsSync(path.join(candidate, 'ffmpeg.exe'))) {
+    ffmpegDir = candidate
+    break
+  }
+}
+if (!ffmpegDir) {
+  ffmpegDir = path.join(appPath, 'resources', 'ffmpeg')
+}
 const ffmpegPath = path.join(ffmpegDir, 'ffmpeg.exe')
 const ffprobePath = path.join(ffmpegDir, 'ffprobe.exe')
 
@@ -480,6 +494,7 @@ export interface ExportOptions {
   quality: number
   fps: number
   onProgress?: (progress: number) => void
+}
 // ═══════════════════════════════════════════════
 // Resolution mapping
 // ═══════════════════════════════════════════════
@@ -909,8 +924,6 @@ function exportSingleClip(
     }
 
     const vfFilters: string[] = [`setpts=${ptsFactor.toFixed(4)}*PTS`, `scale=${outW}:${outH}:force_original_aspect_ratio=decrease`, `pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2`]
-
-    const vfFilters: string[] = [`setpts=${ptsFactor}*PTS`, `scale=${outW}:${outH}`]
 
     // Apply color correction filters
     const primaryFilter = buildPrimaryColorFilter(clip.primaryColor)

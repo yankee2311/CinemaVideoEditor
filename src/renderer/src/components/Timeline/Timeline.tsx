@@ -70,6 +70,7 @@ export default function Timeline() {
   const { getWaveform } = useWaveformCache()
   const waveformDataRef = useRef<Map<string, { samples: number[]; sampleRate: number }>>(new Map())
   const pendingWaveformsRef = useRef<Set<string>>(new Set())
+  const tracks = project?.tracks ?? []
 
   // Load waveforms for audio clips as they appear
   useEffect(() => {
@@ -136,7 +137,6 @@ export default function Timeline() {
   const totalWidth = Math.max(visibleWidth, timeToPixels(totalDuration + 10, zoom))
   const maxScrollX = Math.max(0, totalWidth - visibleWidth)
 
-  const tracks = project?.tracks ?? []
   const totalHeight = tracks.length * TRACK_HEIGHT + RULER_HEIGHT
   const visibleHeight = canvasSize.height - RULER_HEIGHT
   const maxScrollY = Math.max(0, totalHeight - visibleHeight)
