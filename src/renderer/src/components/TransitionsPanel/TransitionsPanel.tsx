@@ -23,6 +23,7 @@ export default function TransitionsPanel() {
   }, [project, timeline.selectedClipId])
 
   const [duration, setDuration] = React.useState(0.5)
+  const [position, setPosition] = React.useState<'in' | 'out'>('out')
 
   return (
     <div style={{ padding: '10px 12px', overflowY: 'auto', height: '100%' }}>
@@ -37,15 +38,7 @@ export default function TransitionsPanel() {
         <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
           Types
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {TRANSITION_TYPES.map(t => (
-            <button
-              key={t.type}
-              onClick={() => {
-                if (selectedClip) {
-                  setTransition(selectedClip.id, { type: t.type, duration }, 'out')
-                }
-              }}
+        <div style={{\n          display: 'flex', alignItems: 'center', gap: 6,\n          fontSize: 10, color: 'var(--text-muted)', marginBottom: 8,\n        }}>\n          <span style={{ textTransform: 'uppercase', letterSpacing: 0.8 }}>Apply to:</span>\n          <button\n            onClick={() => setPosition('in')}\n            style={{\n              padding: '2px 10px', fontSize: 10, fontWeight: 500,\n              background: position === 'in' ? 'var(--accent)' : 'var(--bg-secondary)',\n              color: position === 'in' ? '#fff' : 'var(--text-muted)',\n              borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',\n            }}\n          >In</button>\n          <button\n            onClick={() => setPosition('out')}\n            style={{\n              padding: '2px 10px', fontSize: 10, fontWeight: 500,\n              background: position === 'out' ? 'var(--accent)' : 'var(--bg-secondary)',\n              color: position === 'out' ? '#fff' : 'var(--text-muted)',\n              borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',\n            }}\n          >Out</button>\n        </div>\n        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>\n          {TRANSITION_TYPES.map(t => (\n            <button\n              key={t.type}\n              onClick={() => {\n                if (selectedClip) {\n                  setTransition(selectedClip.id, { type: t.type, duration }, position)\n                }\n              }}
               disabled={!selectedClip}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
