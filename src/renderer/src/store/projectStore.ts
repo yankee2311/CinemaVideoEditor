@@ -14,6 +14,13 @@ import {
   type TextClipData,
   type Marker,
 } from '@shared/types'
+import type {
+  PrimaryColorParams,
+  ColorWheelsParams,
+  RGBACurve,
+  ParametricCurves,
+  LUTData,
+} from '@shared/color'
 
 interface ProjectStore {
   project: Project | null
@@ -83,6 +90,19 @@ interface ProjectStore {
 
   // Multicam sync
   syncMulticam: (clipIds: string[]) => Promise<void>
+
+  // Color
+  setPrimaryColor: (clipId: string, params: Partial<PrimaryColorParams>) => void
+  setColorWheels: (clipId: string, params: Partial<ColorWheelsParams>) => void
+  setRGBCurves: (clipId: string, curves: Partial<RGBACurve>) => void
+  setParametricCurves: (clipId: string, curves: Partial<ParametricCurves>) => void
+  addPrimaryColorKeyframe: (clipId: string, paramName: string, time: number, value: number) => void
+  removePrimaryColorKeyframe: (clipId: string, paramName: string, keyframeId: string) => void
+
+  // LUTs
+  addLut: (lut: LUTData) => void
+  removeLut: (lutId: string) => void
+  applyLutToClip: (clipId: string, lutId: string | null) => void
 
   // Undo/Redo
   undo: () => void
@@ -173,6 +193,7 @@ function createDefaultProject(name: string, settings?: Partial<ProjectSettings>)
       },
     ],
     mediaAssets: [],
+    luts: [],
     version: 1,
   }
 }
@@ -1040,6 +1061,215 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       console.error('Multicam sync failed:', err)
     }
   },
+
+  // ---- Color ----
+
+  setPrimaryColor: (clipId, params) =>
+    set((s) => {
+      if (!s.project) return s
+      const defaults = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, saturation: 0, temperature: 0, tint: 0 }
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? { ...c, primaryColor: { ...defaults, ...c.primaryColor, ...params } }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setColorWheels: (clipId, params) =>
+    set((s) => {
+      if (!s.project) return s
+      const defaults = { shadows: [0, 0] as [number, number], midtones: [0, 0] as [number, number], highlights: [0, 0] as [number, number], intensity: 50 }
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? { ...c, colorWheels: { ...defaults, ...c.colorWheels, ...params } }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setRGBCurves: (clipId, curves) =>
+    set((s) => {
+      if (!s.project) return s
+      const defaultMono = [{ x: 0, y: 0 }, { x: 1, y: 1 }]
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? {
+                    ...c,
+                    rgbCurves: {
+                      master: [...defaultMono],
+                      red: [...defaultMono],
+                      green: [...defaultMono],
+                      blue: [...defaultMono],
+                      alpha: [...defaultMono],
+                      ...c.rgbCurves,
+                      ...curves,
+                    },
+                  }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  setParametricCurves: (clipId, curves) =>
+    set((s) => {
+      if (!s.project) return s
+      const defaultMono = [{ x: 0, y: 0 }, { x: 1, y: 1 }]
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? {
+                    ...c,
+                    parametricCurves: {
+                      hueVsHue: [...defaultMono],
+                      hueVsSat: [...defaultMono],
+                      lumaVsSat: [...defaultMono],
+                      hueVsLuma: [...defaultMono],
+                      ...c.parametricCurves,
+                      ...curves,
+                    },
+                  }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  addPrimaryColorKeyframe: (clipId, paramName, time, value) =>
+    set((s) => {
+      if (!s.project) return s
+      const kf: Keyframe = { id: uid(), time, value, interpolation: 'linear' }
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? {
+                    ...c,
+                    primaryColorKeyframes: {
+                      ...c.primaryColorKeyframes,
+                      [paramName]: [...(c.primaryColorKeyframes?.[paramName] ?? []), kf],
+                    },
+                  }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  removePrimaryColorKeyframe: (clipId, paramName, keyframeId) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        ...pushUndo(s),
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId
+                ? {
+                    ...c,
+                    primaryColorKeyframes: {
+                      ...c.primaryColorKeyframes,
+                      [paramName]: (c.primaryColorKeyframes?.[paramName] ?? []).filter(
+                        (k) => k.id !== keyframeId
+                      ),
+                    },
+                  }
+                : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  // ---- LUTs ----
+
+  addLut: (lut) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          luts: [...(s.project.luts ?? []), lut],
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  removeLut: (lutId) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          luts: (s.project.luts ?? []).filter((l) => l.id !== lutId),
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.appliedLutId === lutId ? { ...c, appliedLutId: undefined } : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
+
+  applyLutToClip: (clipId, lutId) =>
+    set((s) => {
+      if (!s.project) return s
+      return {
+        project: {
+          ...s.project,
+          tracks: s.project.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId ? { ...c, appliedLutId: lutId ?? undefined } : c
+            ),
+          })),
+          modifiedAt: new Date().toISOString(),
+        },
+      }
+    }),
 
   serializeProject: () => {
     const state = get()

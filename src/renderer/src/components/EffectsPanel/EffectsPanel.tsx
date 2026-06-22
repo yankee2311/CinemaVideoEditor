@@ -38,7 +38,7 @@ export default function EffectsPanel() {
               {defs.map(def => (
                 <button
                   key={def.id}
-                  onClick={() => { if (selectedClip) addEffect(selectedClip.id, def.type) }}
+                  onClick={() => { if (selectedClip) addEffect(selectedClip.id, def.id) }}
                   disabled={!selectedClip}
                   style={{
                     padding: '4px 10px',
